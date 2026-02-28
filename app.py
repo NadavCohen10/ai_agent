@@ -6,6 +6,7 @@ Stateful flow:
 3) Export approved_df to Excel.
 """
 
+import math
 import pandas as pd
 import streamlit as st
 
@@ -60,19 +61,37 @@ def main_area(kb_file, questionnaire_file):
                     st.warning("Questionnaire parsing is PDF-only in this step.")
 
                 if questionnaire_text:
-                    with st.spinner(
-                        "Gemini is analyzing the questionnaire... this might take a minute or two"
-                    ):
-                        ai_results = analyze_questionnaire(
-                            kb_text=kb_text, questionnaire_text=questionnaire_text
-                        )
-                    display_data = ai_results
-                    if hasattr(ai_results, "model_dump"):
-                        display_data = ai_results.model_dump()
-                    elif hasattr(ai_results, "root"):
-                        display_data = ai_results.root
+                    status_box.info("Extracting questions...")
+                    progress = st.progress(0, text="Extracting questions...")
+                    # analyze_questionnaire now handles extraction + batching internally,
+                    # but we'll show progress messages manually for transparency.
+                    # First call extraction to know total questions/batches
+                    # For UI feedback, we call extraction separately then reuse results.
+                    from ai_agent import extract_questions, answer_questions_in_batches
 
-                    df = pd.DataFrame(display_data)
+                    extracted = extract_questions(questionnaire_text)
+                    total_questions = len(extracted)
+                    if total_questions == 0:
+                        st.error("No questions extracted; cannot proceed.")
+                        return
+
+                    batch_size = 15
+                    total_batches = math.ceil(total_questions / batch_size)
+                    progress.progress(0, text=f"Processing batch 1 of {total_batches}...")
+
+                    master_answers = []
+                    for idx in range(total_batches):
+                        batch = extracted[idx * batch_size : (idx + 1) * batch_size]
+                        progress.progress(
+                            idx / total_batches,
+                            text=f"Processing batch {idx + 1} of {total_batches}...",
+                        )
+                        answers = answer_questions_in_batches(kb_text, batch)
+                        master_answers.extend(answers)
+
+                    progress.progress(1.0, text="All batches processed.")
+
+                    df = pd.DataFrame(master_answers)
                     if not df.empty:
                         df["Status"] = df.apply(
                             lambda row: "⚠️ REVIEW"

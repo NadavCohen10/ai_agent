@@ -55,6 +55,7 @@ class ExtractionList(BaseModel):
     questions: List[ExtractedQuestion]
 
 
+
 SYSTEM_INSTRUCTION_ANSWER = (
     "You are an Expert IT Security Officer. Complete the Vendor Security Questionnaire "
     "based ONLY on the provided Knowledge Base.\n"
@@ -68,11 +69,51 @@ SYSTEM_INSTRUCTION_ANSWER = (
     "flag_for_human_review (boolean)."
 )
 
+SYSTEM_INSTRUCTION_EXCEL = (
+    "You are an AI data entry assistant filling out an existing compliance spreadsheet form. "
+    "You will be given the exact column headers of the form and a batch of rows. For each row:\n"
+
+    "  a) DYNAMIC ANCHOR DETECTION: Do NOT assume the anchor subject is always in a specific column "
+    "like 'Category' or column B. For each row, read ALL key-value pairs and semantically identify "
+    "which cell contains the core subject (e.g., 'Antivirus', 'Password Policy'). "
+    "Use that identified subject to search the Knowledge Base.\n"
+
+    "  b) Look up the anchor subject in the Knowledge Base using intelligent context mapping "
+    "(e.g. if the KB says 'Exists: Yes', map that to an Implementation Stage column as 'Implemented').\n"
+
+    "  c) Fill every empty string field in the row with the best answer from the Knowledge Base. "
+    "Keep already-populated fields exactly as they are.\n"
+
+    "  d) STRICT CATEGORICAL MATCHING: Carefully analyze each column header and any "
+    "placeholder/example text in the row. If a cell semantically represents a multiple-choice list, "
+    "a legend, or a set of allowed values — whether separated by slashes, commas, parentheses, "
+    "pipes '|', or words like 'Choose one:' — treat it as a strict data validation rule. "
+    "You MUST restrict your answer for that column to EXACTLY one of those allowed options. "
+    "Translate the Knowledge Base meaning to match the closest allowed explicit option perfectly.\n"
+
+    "  e) If no specific info is found for a field, return an EMPTY STRING \"\". "
+    "NEVER write 'No information available' or 'N/A'.\n"
+
+    "  f) Add a key '_AI_Status' to each object: set it to 'OK' if the anchor subject was found "
+    "in the KB, or 'REVIEW' only if the anchor subject is entirely missing from the KB.\n\n"
+
+    "CRITICAL OUTPUT RULES:\n"
+    "  1. Return a JSON array of EXACTLY the same length as the input batch, one object per row, same order.\n"
+    "  2. EVERY object MUST contain EVERY key from the provided headers list plus '_AI_Status' — no exceptions.\n"
+    "  3. DO NOT add keys that are not in the headers list. DO NOT drop or rename any key.\n"
+    "  4. Never skip a row."
+)
+
 SYSTEM_INSTRUCTION_EXTRACT = (
-    "You are an expert document parser. Extract every single question from the provided questionnaire text chunk. "
-    "Ignore general text, instructions, or headers. Return an exhaustive JSON list of questions with their IDs and text. "
-    "If you do not find any specific questions in this exact text block (e.g., it is just a cover page, generic instructions, or a table of contents), DO NOT invent questions. Simply return an empty list [] for the questions array. "
-    "Use fields: question_id (string), question_text (string). Preserve original order; if no IDs, generate sequential IDs like Q1, Q2, ..."
+    "You are a precise data extraction assistant processing compliance forms, questionnaires, and capability matrices. "
+    "Your task is to extract every single item that requires an answer, evaluation, or response. "
+    "CRITICAL: These items often DO NOT end with a question mark. They might be standalone terms, criteria, or table row items "
+    "(e.g., 'Antivirus', 'Firewall', 'City of birth', 'Encryption', 'אנטי וירוס', 'חומת אש'). "
+    "Treat every row item, criterion, or topic that expects a status or comment as a 'question_text'. "
+    "Extract them exactly as they appear in the source text (in their original language, including Hebrew). "
+    "Do not filter based on topic. If it is a line item in a form meant to be filled out, extract it as a question. "
+    "Use fields: question_id (string), question_text (string). Generate sequential IDs Q1, Q2, ... if none exist. "
+    "If the text is truly empty or contains no extractable items, return an empty list []."
 )
 
 
@@ -158,10 +199,11 @@ def extract_questions(questionnaire_text: str) -> List[dict]:
 
     for idx, chunk in enumerate(text_chunks, start=1):
         chunk_prompt = (
-            "Extract every single question from the provided questionnaire text chunk. "
-            "Ignore general text, instructions, or headers. Return an exhaustive JSON list of questions with their IDs and text.\n"
-            "If you do not find any specific questions in this exact text block (e.g., it is just a cover page, generic instructions, or a table of contents), DO NOT invent questions. Simply return an empty list [] for the questions array.\n"
-            "Questionnaire Chunk:\n"
+            "The text below is from a compliance form or capability matrix. Items may be in Hebrew or English.\n"
+            "Extract EVERY line item, criterion, or term that represents something requiring an answer or evaluation. "
+            "IMPORTANT: Items will NOT have question marks — they are standalone terms or short phrases (e.g., 'אנטי וירוס', 'Firewall'). "
+            "Do NOT filter by topic. Do NOT translate. Return every item exactly as it appears.\n\n"
+            "Text:\n"
             f"{chunk}\n\n"
             "Return only the JSON array."
         )
@@ -304,6 +346,79 @@ def answer_questions_in_batches(kb_text: str, extracted_questions: List[dict]) -
         master_answers.extend(answers)
 
     return master_answers
+
+
+def answer_excel_rows_batch(
+    kb_text: str,
+    original_columns: List[str],
+    rows_batch: List[dict],
+) -> List[dict]:
+    """
+    Native Excel pipeline: send a batch of rows to the LLM and return filled dicts.
+    Each returned dict contains the original keys plus '_AI_Status' (UI-only).
+    Returns the original rows unchanged on failure so the caller's DataFrame is safe.
+    """
+    if not API_KEY:
+        raise ValueError("GEMINI_API_KEY is not set.")
+
+    safe_batch = json.loads(json.dumps(rows_batch, ensure_ascii=False, default=str))
+    headers_str = json.dumps(original_columns, ensure_ascii=False)
+    batch_json = json.dumps(safe_batch, ensure_ascii=False)
+    row_count = len(safe_batch)
+
+    prompt = (
+        f"You are receiving a JSON array containing exactly {row_count} row object(s). "
+        f"You MUST process EVERY row and return a JSON array of exactly {row_count} object(s) — no more, no less.\n\n"
+        f"The form has these exact column headers: {headers_str}\n\n"
+        "For each row:\n"
+        "  a) Identify the populated anchor value (the non-empty subject, e.g. 'Antivirus').\n"
+        "  b) Search the Knowledge Base for that subject using intelligent context mapping "
+        "(e.g. if the KB says 'Exists: Yes', map that to the Implementation Stage column as 'Implemented').\n"
+        "  c) Fill every empty string field in the row with the best answer from the Knowledge Base.\n"
+        "  d) Keep already-populated fields exactly as they are.\n"
+        "  e) If no specific info is found for a field, return an EMPTY STRING \"\". "
+        "NEVER write 'No information available' or 'N/A'.\n"
+        "  f) Add a key '_AI_Status' to each object: set it to 'OK' if the anchor subject was found "
+        "in the KB, or 'REVIEW' only if the anchor subject is entirely missing from the KB.\n\n"
+        "RULES: Return ONLY a JSON array. Each object MUST contain every key from the headers list "
+        "plus '_AI_Status'. Do not add any other new keys.\n\n"
+        "Knowledge Base:\n"
+        f"{kb_text}\n\n"
+        "Rows:\n"
+        f"{batch_json}\n\n"
+        "Return only the JSON array."
+    )
+
+    for attempt in range(5):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION_EXCEL,
+                    response_mime_type="application/json",
+                    max_output_tokens=8192,
+                    temperature=0.1,
+                ),
+            )
+            raw_text = getattr(response, "text", "") or ""
+            print(f"[Excel batch] attempt {attempt + 1}: {raw_text[:300]}")
+            result = json.loads(clean_json_string(raw_text))
+            if isinstance(result, dict):
+                result = [result]
+            if isinstance(result, list):
+                return result
+        except Exception as e:
+            msg = str(e)
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+                rotate_key()
+                print("[Rate Limit] Hit 429/RESOURCE_EXHAUSTED. Waiting 60s...")
+                time.sleep(60)
+            else:
+                print(f"[Excel batch] Error on attempt {attempt + 1}: {e}")
+                time.sleep(5)
+
+    return list(rows_batch)  # fallback: caller keeps original values
 
 
 def analyze_questionnaire(kb_text: str, questionnaire_text: str) -> List[dict]:

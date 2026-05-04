@@ -1,5 +1,5 @@
 """
-Gemini integration with two-stage batching:
+LLM integration with two-stage batching:
 1) Extract questions from the questionnaire text (chunked).
 2) Answer questions in batches to avoid token limits.
 Includes cleaning to handle noisy PDF extraction artifacts.
@@ -9,52 +9,14 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
 import time
-from typing import Any, Iterable, List
+from typing import Any, Iterable, List, Optional
 
-from dotenv import load_dotenv
-from google import genai
-from google.genai import types
-from pydantic import BaseModel, Field, RootModel
-from key_provider import get_active_key, setup_and_get_key, rotate_key
+from llm_provider import BaseLLMProvider
 
 
-load_dotenv()
-current_api_key = setup_and_get_key()
-
-API_KEY = get_active_key() #os.getenv("GEMINI_API_KEY")
-if API_KEY:
-    os.environ.setdefault("GOOGLE_API_KEY", API_KEY)
-
-client = genai.Client()
-
-
-# Schemas
-class Answer(BaseModel):
-    question_id: str = Field(..., description="Identifier from the questionnaire")
-    question_text: str = Field(..., description="Original question text")
-    proposed_yes_no: str = Field(..., description="One of: Yes, No, N/A")
-    proposed_comments: str = Field(..., description="Explanation grounded in KB")
-    confidence_level: str = Field(..., description="High or Low")
-    reasoning: str = Field(..., description="Internal reasoning; cite missing info if any")
-    flag_for_human_review: bool = Field(..., description="True if confidence is Low or data missing")
-
-
-class QuestionnaireResponse(RootModel[List[Answer]]):
-    root: List[Answer]
-
-
-class ExtractedQuestion(BaseModel):
-    question_id: str
-    question_text: str
-
-
-class ExtractionList(BaseModel):
-    questions: List[ExtractedQuestion]
-
-
+# ── System prompts ────────────────────────────────────────────────────────────
 
 SYSTEM_INSTRUCTION_ANSWER = (
     "You are an Expert IT Security Officer. Complete the Vendor Security Questionnaire "
@@ -63,10 +25,14 @@ SYSTEM_INSTRUCTION_ANSWER = (
     "If it says 'AWS Security Groups', recognize it as a firewall.\n"
     "If information is missing, DO NOT guess. State 'No information available' and set confidence to Low.\n"
     "You must analyze the entire questionnaire and provide an answer for EVERY SINGLE question provided to you.\n"
-    "Your output MUST be a JSON array of objects with the following schema: "
-    "question_id (string), question_text (string), proposed_yes_no (string: Yes/No/N/A), "
-    "proposed_comments (string), confidence_level (string: High/Low), reasoning (string), "
-    "flag_for_human_review (boolean)."
+    "Return a JSON object with an 'answers' key containing an array of answer objects."
+)
+
+NAIVE_SYSTEM_PROMPT_ANSWER = (
+    "You are a helpful assistant. Answer the provided security questionnaire questions "
+    "based on the Knowledge Base. Return a JSON object with an 'answers' key containing "
+    "an array of answer objects, each with: question_id, question_text, proposed_yes_no, "
+    "proposed_comments, confidence_level, reasoning, flag_for_human_review."
 )
 
 SYSTEM_INSTRUCTION_EXCEL = (
@@ -113,14 +79,20 @@ SYSTEM_INSTRUCTION_EXCEL = (
 
     "7. OUTPUT FORMAT:\n"
     "You must return a valid JSON array of objects. Every single object must contain ALL the original keys provided "
-    "in the input, plus the `_AI_Status` key and the `_AI_Reasoning` key. Do not drop any columns."
+    "in the input, plus the `_AI_Status` key and the `_AI_Reasoning` key. Do not drop any columns.\n"
+    "CRITICAL: DO NOT TRUNCATE THE ARRAY. You must output exactly the same number of rows as provided in the input."
+)
+
+NAIVE_SYSTEM_PROMPT_EXCEL = (
+    "You are a helpful assistant. Fill in the missing columns in each row based on the provided "
+    "Knowledge Base text. Return the completed rows as a JSON array. Add an '_AI_Status' key to "
+    "each row: 'OK' if you found relevant info, 'REVIEW' if the subject was not in the KB."
 )
 
 SYSTEM_INSTRUCTION_EXTRACT = (
     "You are a precise data extraction assistant processing compliance forms, questionnaires, and capability matrices. "
     "Your task is to extract every single item that requires an answer, evaluation, or response. "
-    "CRITICAL: These items often DO NOT end with a question mark. They might be standalone terms, criteria, or table row items "
-    "(e.g., 'Antivirus', 'Firewall', 'City of birth', 'Encryption', 'אנטי וירוס', 'חומת אש'). "
+    "CRITICAL: These items often DO NOT end with a question mark. They might be standalone terms, criteria, or table row items. "
     "Treat every row item, criterion, or topic that expects a status or comment as a 'question_text'. "
     "Extract them exactly as they appear in the source text (in their original language, including Hebrew). "
     "Do not filter based on topic. If it is a line item in a form meant to be filled out, extract it as a question. "
@@ -128,6 +100,60 @@ SYSTEM_INSTRUCTION_EXTRACT = (
     "If the text is truly empty or contains no extractable items, return an empty list []."
 )
 
+
+# ── JSON Schema constants ─────────────────────────────────────────────────────
+
+EXTRACTION_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "questions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "question_id": {"type": "string"},
+                    "question_text": {"type": "string"},
+                },
+                "required": ["question_id", "question_text"],
+            },
+        }
+    },
+    "required": ["questions"],
+}
+
+QA_ANSWER_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "answers": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "question_id": {"type": "string"},
+                    "question_text": {"type": "string"},
+                    "proposed_yes_no": {"type": "string"},
+                    "proposed_comments": {"type": "string"},
+                    "confidence_level": {"type": "string"},
+                    "reasoning": {"type": "string"},
+                    "flag_for_human_review": {"type": "boolean"},
+                },
+                "required": [
+                    "question_id",
+                    "question_text",
+                    "proposed_yes_no",
+                    "proposed_comments",
+                    "confidence_level",
+                    "reasoning",
+                    "flag_for_human_review",
+                ],
+            },
+        }
+    },
+    "required": ["answers"],
+}
+
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
 
 def clean_json_string(raw_string: str) -> str:
     """Remove markdown fences and trim whitespace for safer JSON parsing."""
@@ -142,40 +168,35 @@ def clean_extracted_text(text: str) -> str:
     """Reduce noisy newlines and spaces from PDF extraction artifacts."""
     text = re.sub(r"\n+", " ", text)
     text = re.sub(r"\s{2,}", " ", text)
-    text = text.replace("’", "'").replace("‘", "'")
+    text = text.replace("\u2018", "'").replace("\u2019", "'")
     return text.strip()
 
 
-def get_smart_chunks(text, max_chars=4000):
+def get_smart_chunks(text: str, max_chars: int = 4000) -> list[str]:
     chunks = []
-    while len(text) > 0:
+    while text:
         if len(text) <= max_chars:
             chunks.append(text)
             break
-        
-        # Find the last question mark or period before the limit
-        split_index_q = text.rfind('? ', 0, max_chars)
-        split_index_p = text.rfind('. ', 0, max_chars)
+
+        split_index_q = text.rfind("? ", 0, max_chars)
+        split_index_p = text.rfind(". ", 0, max_chars)
         split_index = max(split_index_q, split_index_p)
-        
-        # If no punctuation found, fall back to the last space
+
         if split_index == -1:
-            split_index = text.rfind(' ', 0, max_chars)
-            
-        # If still no space (huge block of text), force split
+            split_index = text.rfind(" ", 0, max_chars)
         if split_index == -1:
             split_index = max_chars
         else:
-            # Include the space/punctuation in the current chunk
             split_index += 1
-            
+
         chunks.append(text[:split_index].strip())
         text = text[split_index:].strip()
-        
+
     return chunks
 
 
-def _error_response(raw_string: str):
+def _error_response(raw_string: str) -> list[dict]:
     """Return a safe error payload to avoid UI crashes."""
     snippet = (raw_string or "")[:200]
     return [
@@ -196,11 +217,13 @@ def _chunk_list(items: List[Any], size: int) -> Iterable[List[Any]]:
         yield items[i : i + size]
 
 
-def extract_questions(questionnaire_text: str) -> List[dict]:
-    """Stage 1: Extract all questions as a list of {question_id, question_text}."""
-    if not API_KEY:
-        raise ValueError("GEMINI_API_KEY is not set.")
+# ── Core pipeline functions ───────────────────────────────────────────────────
 
+def extract_questions(
+    questionnaire_text: str,
+    provider: BaseLLMProvider,
+) -> List[dict]:
+    """Stage 1 – Extract all line items as {question_id, question_text}."""
     cleaned_text = clean_extracted_text(questionnaire_text)
     text_chunks = get_smart_chunks(cleaned_text, max_chars=4000)
     all_extracted_questions: List[dict] = []
@@ -213,146 +236,93 @@ def extract_questions(questionnaire_text: str) -> List[dict]:
         chunk_prompt = (
             "The text below is from a compliance form or capability matrix. Items may be in Hebrew or English.\n"
             "Extract EVERY line item, criterion, or term that represents something requiring an answer or evaluation. "
-            "IMPORTANT: Items will NOT have question marks — they are standalone terms or short phrases (e.g., 'אנטי וירוס', 'Firewall'). "
+            "IMPORTANT: Items will NOT have question marks — they are standalone terms or short phrases. "
             "Do NOT filter by topic. Do NOT translate. Return every item exactly as it appears.\n\n"
-            "Text:\n"
-            f"{chunk}\n\n"
-            "Return only the JSON array."
+            f"Text:\n{chunk}\n"
         )
-        print(f"[Extraction] Processing chunk {idx}/{len(text_chunks)} with ~{len(chunk)} chars")
+        print(f"[Extraction] Processing chunk {idx}/{len(text_chunks)} (~{len(chunk)} chars)")
         chunk_success = False
         for attempt in range(3):
             try:
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=chunk_prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_INSTRUCTION_EXTRACT,
-                        response_mime_type="application/json",
-                        response_schema=ExtractionList,
-                        max_output_tokens=8192,
-                        temperature=0.1,
-                    ),
+                result = provider.generate_response(
+                    SYSTEM_INSTRUCTION_EXTRACT,
+                    chunk_prompt,
+                    EXTRACTION_SCHEMA,
                 )
-
-                raw_text = getattr(response, "text", "") or ""
-                print(f"[Gemini extraction raw response chunk {idx} attempt {attempt+1}]\n", raw_text)
-
-                if getattr(response, "parsed", None) is not None:
-                    parsed = response.parsed
-                    if hasattr(parsed, "questions"):
-                        chunk_questions = [
-                            q.model_dump() if hasattr(q, "model_dump") else q for q in parsed.questions
-                        ]
-                    elif hasattr(parsed, "model_dump"):
-                        data = parsed.model_dump()
-                        chunk_questions = data.get("questions", data)
-                    else:
-                        chunk_questions = parsed
-                else:
-                    cleaned = clean_json_string(raw_text)
-                    chunk_questions = json.loads(cleaned)
-
-                if isinstance(chunk_questions, dict):
-                    chunk_questions = [chunk_questions]
-
+                chunk_questions: list = (
+                    result.get("questions", []) if isinstance(result, dict) else result or []
+                )
                 all_extracted_questions.extend(chunk_questions)
                 chunk_success = True
-                break  # exit retry loop on success
+                break
             except Exception as exc:
-                print(f"[Extraction] Chunk {idx} failed on attempt {attempt+1}: {exc}")
+                print(f"[Extraction] Chunk {idx} attempt {attempt + 1} failed: {exc}")
                 time.sleep(3)
 
         if not chunk_success:
             print(f"[Extraction] Skipping chunk {idx} after 3 failed attempts.")
-            continue
 
-        time.sleep(2)  # gentle pacing to avoid rate limits
+        time.sleep(2)
 
-    print(f"[Extraction] Total extracted questions: {len(all_extracted_questions)}")
+    print(f"[Extraction] Total extracted: {len(all_extracted_questions)}")
     return all_extracted_questions
 
 
-def answer_questions_in_batches(kb_text: str, extracted_questions: List[dict]) -> List[dict]:
-    """Stage 2: Answer questions in batches to avoid token limits."""
-    if not API_KEY:
-        raise ValueError("GEMINI_API_KEY is not set.")
-
+def answer_questions_in_batches(
+    kb_text: str,
+    extracted_questions: List[dict],
+    provider: BaseLLMProvider,
+    use_advanced_prompt: bool = True,
+) -> List[dict]:
+    """Stage 2 – Answer questions in batches using the KB."""
     if not extracted_questions:
         return _error_response("No questions extracted")
 
-    # Normalize to list of dicts
-    normalized_questions = []
-    for q in extracted_questions:
-        if hasattr(q, "model_dump"):
-            normalized_questions.append(q.model_dump())
-        else:
-            normalized_questions.append(q)
+    system_prompt = SYSTEM_INSTRUCTION_ANSWER if use_advanced_prompt else NAIVE_SYSTEM_PROMPT_ANSWER
+
+    normalized = [
+        q.model_dump() if hasattr(q, "model_dump") else q for q in extracted_questions
+    ]
 
     master_answers: List[dict] = []
     batch_size = 15
-    total_batches = math.ceil(len(normalized_questions) / batch_size)
+    total_batches = math.ceil(len(normalized) / batch_size)
 
-    for batch_index, batch in enumerate(_chunk_list(normalized_questions, batch_size), start=1):
-        batch_json = json.dumps(batch, ensure_ascii=False)
+    for batch_index, batch in enumerate(_chunk_list(normalized, batch_size), start=1):
         prompt = (
             "Answer ONLY the questions provided below using the Knowledge Base. "
-            "Do not add new questions and do not omit any provided questions.\n"
-            "Knowledge Base:\n"
-            f"{kb_text}\n\n"
-            "Questions (JSON):\n"
-            f"{batch_json}\n\n"
-            "Return only the JSON array of answers."
+            "Do not add new questions and do not omit any provided questions.\n\n"
+            f"Knowledge Base:\n{kb_text}\n\n"
+            f"Questions (JSON):\n{json.dumps(batch, ensure_ascii=False)}\n"
         )
 
-        answers = None
+        answers: Optional[List[dict]] = None
         for attempt in range(5):
             try:
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_INSTRUCTION_ANSWER,
-                        response_mime_type="application/json",
-                        response_schema=QuestionnaireResponse,
-                        max_output_tokens=8192,
-                        temperature=0.1,
-                    ),
-                )
+                result = provider.generate_response(system_prompt, prompt, QA_ANSWER_SCHEMA)
+                print(f"[QA batch {batch_index}/{total_batches} attempt {attempt + 1}] type={type(result).__name__}")
 
-                raw_text = getattr(response, "text", "") or ""
-                print(f"[Gemini answer batch {batch_index}/{total_batches} raw response attempt {attempt+1}]\n", raw_text)
-
-                if getattr(response, "parsed", None) is not None:
-                    parsed = response.parsed
-                    if hasattr(parsed, "root"):
-                        answers = [
-                            item.model_dump() if hasattr(item, "model_dump") else item for item in parsed.root
-                        ]
-                    elif hasattr(parsed, "model_dump"):
-                        answers = parsed.model_dump()
-                    else:
-                        answers = parsed
+                if isinstance(result, dict):
+                    answers = result.get("answers", [])
+                elif isinstance(result, list):
+                    answers = result
                 else:
-                    cleaned = clean_json_string(raw_text)
-                    answers = json.loads(cleaned)
+                    answers = []
 
-                time.sleep(5)  # pacing between successful batches
-                break  # success
+                time.sleep(5)
+                break
             except Exception as e:
                 msg = str(e)
                 if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-                    rotate_key()
-                    print("[Rate Limit] Hit 429/RESOURCE_EXHAUSTED. Waiting 60s before retrying...")
+                    provider.rotate_key()
+                    print("[Rate Limit] 429/RESOURCE_EXHAUSTED — waiting 60 s before retry...")
                     time.sleep(60)
                 else:
-                    print(f"[Answering] Error on attempt {attempt+1}: {e}")
+                    print(f"[Answering] Error on attempt {attempt + 1}: {e}")
                     time.sleep(5)
-                answers = None
 
         if answers is None:
             answers = _error_response("Batch failed after retries")
-
         if isinstance(answers, dict):
             answers = [answers]
         master_answers.extend(answers)
@@ -364,14 +334,15 @@ def answer_excel_rows_batch(
     kb_text: str,
     original_columns: List[str],
     rows_batch: List[dict],
+    provider: BaseLLMProvider,
+    use_advanced_prompt: bool = True,
 ) -> List[dict]:
     """
-    Native Excel pipeline: send a batch of rows to the LLM and return filled dicts.
-    Each returned dict contains the original keys plus '_AI_Status' (UI-only).
-    Returns the original rows unchanged on failure so the caller's DataFrame is safe.
+    Native Excel pipeline – send a batch of rows to the LLM and return filled dicts.
+    Each returned dict contains the original keys plus '_AI_Status'.
+    Falls back to the original rows unchanged on total failure.
     """
-    if not API_KEY:
-        raise ValueError("GEMINI_API_KEY is not set.")
+    system_prompt = SYSTEM_INSTRUCTION_EXCEL if use_advanced_prompt else NAIVE_SYSTEM_PROMPT_EXCEL
 
     safe_batch = json.loads(json.dumps(rows_batch, ensure_ascii=False, default=str))
     headers_str = json.dumps(original_columns, ensure_ascii=False)
@@ -383,48 +354,44 @@ def answer_excel_rows_batch(
         f"You MUST process EVERY row and return a JSON array of exactly {row_count} object(s) — no more, no less.\n\n"
         f"The form has these exact column headers: {headers_str}\n\n"
         "For each row:\n"
-        "  a) Identify the populated anchor value (the non-empty subject, e.g. 'Antivirus').\n"
-        "  b) Search the Knowledge Base for that subject using intelligent context mapping "
-        "(e.g. if the KB says 'Exists: Yes', map that to the Implementation Stage column as 'Implemented').\n"
-        "  c) Fill every empty string field in the row with the best answer from the Knowledge Base.\n"
+        "  a) Identify the populated anchor value (the non-empty subject).\n"
+        "  b) Search the Knowledge Base for that subject using intelligent context mapping.\n"
+        "  c) Fill every empty string field with the best answer from the Knowledge Base.\n"
         "  d) Keep already-populated fields exactly as they are.\n"
         "  e) If no specific info is found for a field, return an EMPTY STRING \"\". "
         "NEVER write 'No information available' or 'N/A'.\n"
-        "  f) Add a key '_AI_Status' to each object: set it to 'OK' if the anchor subject was found "
-        "in the KB, or 'REVIEW' only if the anchor subject is entirely missing from the KB.\n\n"
-        "RULES: Return ONLY a JSON array. Each object MUST contain every key from the headers list "
-        "plus '_AI_Status'. Do not add any other new keys.\n\n"
-        "Knowledge Base:\n"
-        f"{kb_text}\n\n"
-        "Rows:\n"
-        f"{batch_json}\n\n"
-        "Return only the JSON array."
+        "  f) Add '_AI_Status' to each object: 'OK' if the anchor was found in the KB, "
+        "'REVIEW' if the anchor is entirely missing.\n\n"
+        "RULES: Return ONLY a JSON array. Each object MUST contain every key from the headers "
+        "list plus '_AI_Status'. Do not add any other new keys.\n"
+        "CRITICAL: DO NOT TRUNCATE YOUR RESPONSE. You must process and return EVERY row provided. "
+        "The output array length MUST EXACTLY MATCH the input array length.\n\n"
+        f"Knowledge Base:\n{kb_text}\n\n"
+        f"Rows:\n{batch_json}\n"
     )
 
     for attempt in range(5):
         try:
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_INSTRUCTION_EXCEL,
-                    response_mime_type="application/json",
-                    max_output_tokens=8192,
-                    temperature=0.1,
-                ),
-            )
-            raw_text = getattr(response, "text", "") or ""
-            print(f"[Excel batch] attempt {attempt + 1}: {raw_text[:300]}")
-            result = json.loads(clean_json_string(raw_text))
+            result = provider.generate_response(system_prompt, prompt, None)
+            print(f"[Excel batch] attempt {attempt + 1}: type={type(result).__name__}")
             if isinstance(result, dict):
-                result = [result]
+                # Extract array if model wrongly wrapped it in an object (e.g. {"rows": [...]})
+                for val in result.values():
+                    if isinstance(val, list):
+                        result = val
+                        break
+                else:
+                    result = [result]
             if isinstance(result, list):
+                if len(result) < row_count:
+                    print(f"[Excel batch] Warning: output length {len(result)} < expected {row_count}. Retrying...")
+                    raise ValueError(f"Truncated JSON array: expected {row_count} items, got {len(result)}")
                 return result
         except Exception as e:
             msg = str(e)
             if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
-                rotate_key()
-                print("[Rate Limit] Hit 429/RESOURCE_EXHAUSTED. Waiting 60s...")
+                provider.rotate_key()
+                print("[Rate Limit] 429/RESOURCE_EXHAUSTED — waiting 60 s...")
                 time.sleep(60)
             else:
                 print(f"[Excel batch] Error on attempt {attempt + 1}: {e}")
@@ -433,7 +400,12 @@ def answer_excel_rows_batch(
     return list(rows_batch)  # fallback: caller keeps original values
 
 
-def analyze_questionnaire(kb_text: str, questionnaire_text: str) -> List[dict]:
+def analyze_questionnaire(
+    kb_text: str,
+    questionnaire_text: str,
+    provider: BaseLLMProvider,
+    use_advanced_prompt: bool = True,
+) -> List[dict]:
     """Main orchestrator: extract questions, then answer them in batches."""
-    extracted = extract_questions(questionnaire_text)
-    return answer_questions_in_batches(kb_text, extracted)
+    extracted = extract_questions(questionnaire_text, provider)
+    return answer_questions_in_batches(kb_text, extracted, provider, use_advanced_prompt)

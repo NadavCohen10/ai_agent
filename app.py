@@ -7,7 +7,12 @@ import math
 import pandas as pd
 import streamlit as st
 
-from ai_agent import answer_excel_rows_batch
+from ai_agent import (
+    answer_excel_rows_batch,
+    extract_questions,
+    answer_questions_in_batches,
+)
+from llm_provider import GeminiProvider, OpenAIProvider, AnthropicProvider, OllamaProvider, BaseLLMProvider
 from document_parser import (
     extract_kb_text,
     parse_questionnaire_pdf,
@@ -25,12 +30,34 @@ if "approved_df" not in st.session_state:
     st.session_state.approved_df = None
 if "is_excel_pipeline" not in st.session_state:
     st.session_state.is_excel_pipeline = False
+if "gemini_provider" not in st.session_state:
+    st.session_state.gemini_provider = None  # lazy init on first use
+
+
+def _get_gemini_provider() -> GeminiProvider:
+    """Return a cached GeminiProvider, creating it only once per session."""
+    if st.session_state.gemini_provider is None:
+        st.session_state.gemini_provider = GeminiProvider()
+    return st.session_state.gemini_provider
+
+
+def _build_provider(provider_name: str, api_key: str, ollama_model: str = "gemma") -> BaseLLMProvider:
+    if provider_name == "Gemini":
+        return _get_gemini_provider()
+    if provider_name == "OpenAI":
+        return OpenAIProvider(api_key=api_key)
+    if provider_name == "Ollama (Local)":
+        return OllamaProvider(model=ollama_model)
+    if provider_name == "Anthropic":
+        return AnthropicProvider(api_key=api_key)
+    raise ValueError(f"Unknown provider: {provider_name}")
 
 
 def sidebar_inputs():
     with st.sidebar:
         st.header("Inputs")
         st.markdown("Upload your Knowledge Base and the blank questionnaire, then run analysis.")
+
         kb_file = st.file_uploader(
             "Knowledge Base (TXT, PDF, CSV, XLSX)",
             type=["txt", "pdf", "csv", "xlsx", "xls"],
@@ -41,21 +68,74 @@ def sidebar_inputs():
             type=["xlsx", "xls", "pdf"],
             key="questionnaire_uploader",
         )
-        analyze_clicked = st.button("🚀 Analyze & Process Files", type="primary", use_container_width=True)
-            # ---------------------------------------------------------
+        analyze_clicked = st.button("🚀 Analyze & Process Files", type="primary", width="stretch")
+
+        # ---------------------------------------------------------
         # כפתור זמני למפתחים - לבדיקת עיצוב הממשק בשנייה אחת!
         # ---------------------------------------------------------
         if st.sidebar.button("🧪 טען נתוני בדיקה (לעיצוב ה-UI)"):
-            import pandas as pd
             dummy_data = [
                 {"question_id": "Q1", "question_text": "האם המערכת תומכת ב-SSO?", "proposed_yes_no": "Yes", "proposed_comments": "תומכים ב-Okta ו-SAML.", "confidence_level": "High", "reasoning": "נמצא במאגר", "Status": "✅ OK"},
                 {"question_id": "Q2", "question_text": "האם יש תרשים זרימה לנתונים?", "proposed_yes_no": "No", "proposed_comments": "אין מידע זמין במאגר.", "confidence_level": "Low", "reasoning": "לא נמצא אזכור", "Status": "⚠️ REVIEW"},
-                {"question_id": "Q3", "question_text": "האם הנתונים מוצפנים במנוחה?", "proposed_yes_no": "Yes", "proposed_comments": "מוצפן ב-AES-256.", "confidence_level": "High", "reasoning": "כתוב במפורש במסמך האבטחה", "Status": "✅ OK"}
+                {"question_id": "Q3", "question_text": "האם הנתונים מוצפנים במנוחה?", "proposed_yes_no": "Yes", "proposed_comments": "מוצפן ב-AES-256.", "confidence_level": "High", "reasoning": "כתוב במפורש במסמך האבטחה", "Status": "✅ OK"},
             ]
             st.session_state.draft_df = pd.DataFrame(dummy_data)
             st.rerun()
         # ---------------------------------------------------------
-    return kb_file, questionnaire_file, analyze_clicked
+
+        st.divider()
+        st.subheader("Model Settings")
+
+        provider_name = st.selectbox(
+            "LLM Provider",
+            ["Gemini", "OpenAI", "Ollama (Local)", "Anthropic"],
+            index=0,
+            help="Select the AI model provider to use for processing.",
+        )
+
+        use_advanced_prompt = st.checkbox(
+            "Enable Advanced System Prompt (Strict Mode)",
+            value=True,
+            help=(
+                "ON: uses detailed rules with Chain-of-Thought, categorical matching, "
+                "and zero-inference constraints.\n"
+                "OFF: uses a simple 'helpful assistant' prompt for comparison."
+            ),
+        )
+
+        ollama_model = "gemma"
+        if provider_name == "Ollama (Local)":
+            ollama_model = st.text_input(
+                "Ollama Model Tag",
+                value="gemma",
+                placeholder="gemma2, llama3, mistral …",
+                help="Exact model tag you pulled with `ollama pull <tag>`.",
+            )
+            st.caption("Make sure Ollama is running: `ollama serve`")
+
+        api_key_input = ""
+        if provider_name in ("OpenAI", "Anthropic"):
+            import os
+            from dotenv import load_dotenv
+            load_dotenv()
+            env_key_names = {
+                "OpenAI": ("CHATGPT_API_KEY", "OPENAI_API_KEY"),
+                "Anthropic": ("ANTHROPIC_API_KEY",),
+            }
+            has_env_key = any(os.getenv(k) for k in env_key_names.get(provider_name, ()))
+            if has_env_key:
+                st.info(f"{provider_name} API key loaded from .env ✓")
+            else:
+                api_key_input = st.text_input(
+                    f"{provider_name} API Key",
+                    type="password",
+                    placeholder="sk-..." if provider_name == "OpenAI" else "sk-ant-...",
+                    help=f"Your {provider_name} API key (or set it in .env).",
+                )
+                if not api_key_input:
+                    st.warning(f"Enter your {provider_name} API key above.")
+
+    return kb_file, questionnaire_file, analyze_clicked, provider_name, api_key_input, ollama_model, use_advanced_prompt
 
 
 def render_header():
@@ -74,15 +154,24 @@ def render_metrics(df: pd.DataFrame):
 
 
 def main():
-    kb_file, questionnaire_file, analyze_clicked = sidebar_inputs()
+    (
+        kb_file,
+        questionnaire_file,
+        analyze_clicked,
+        provider_name,
+        api_key_input,
+        ollama_model,
+        use_advanced_prompt,
+    ) = sidebar_inputs()
     render_header()
 
     status_placeholder = st.empty()
 
-    # Step 1 - Analysis
+    # Step 1 — Analysis
     if kb_file and questionnaire_file and analyze_clicked:
         try:
             st.session_state.approved_df = None  # reset approvals on new run
+            provider = _build_provider(provider_name, api_key_input, ollama_model)
             kb_text = extract_kb_text(kb_file)
             is_excel = questionnaire_file.name.lower().endswith((".xlsx", ".xls"))
 
@@ -96,28 +185,26 @@ def main():
                     status_placeholder.empty()
                     return
 
-                # Row-count-based batching — never split by character/token count
                 original_columns = questionnaire_df.columns.tolist()
                 rows_list = questionnaire_df.to_dict(orient="records")
                 total_rows = len(rows_list)
-                batch_size = 15  # rows per batch, not characters
+                batch_size = 15
                 total_batches = math.ceil(total_rows / batch_size)
 
                 progress.progress(0.1, text=f"Processing {total_rows} rows in {total_batches} batch(es)...")
                 master_results: list = []
                 for b_idx in range(total_batches):
                     batch = rows_list[b_idx * batch_size : (b_idx + 1) * batch_size]
-                    filled_batch = answer_excel_rows_batch(kb_text, original_columns, batch)
+                    filled_batch = answer_excel_rows_batch(
+                        kb_text, original_columns, batch, provider, use_advanced_prompt
+                    )
                     master_results.extend(filled_batch)
                     progress.progress(
                         0.1 + 0.9 * (b_idx + 1) / total_batches,
                         text=f"Batch {b_idx + 1} of {total_batches} done.",
                     )
 
-                # Reconstruct DataFrame with strictly enforced original columns
-                # `columns=original_columns` guarantees no column can be dropped or added
                 result_df = pd.DataFrame(master_results, columns=original_columns)
-                # Preserve _AI_Status separately since it's not in original_columns
                 ai_statuses = [
                     row.get("_AI_Status", "") if isinstance(row, dict) else ""
                     for row in master_results
@@ -140,9 +227,8 @@ def main():
                 if questionnaire_text:
                     status_placeholder.info("Extracting questions...")
                     progress = st.progress(0, text="Extracting questions...")
-                    from ai_agent import extract_questions, answer_questions_in_batches
 
-                    extracted = extract_questions(questionnaire_text)
+                    extracted = extract_questions(questionnaire_text, provider)
                     total_questions = len(extracted)
                     if total_questions == 0:
                         st.error("No questions extracted; cannot proceed.")
@@ -158,7 +244,9 @@ def main():
                             idx / total_batches,
                             text=f"Processing batch {idx + 1} of {total_batches}...",
                         )
-                        answers = answer_questions_in_batches(kb_text, batch)
+                        answers = answer_questions_in_batches(
+                            kb_text, batch, provider, use_advanced_prompt
+                        )
                         master_answers.extend(answers)
 
                     progress.progress(1.0, text="All batches processed.")
@@ -186,7 +274,7 @@ def main():
             st.error(f"Processing failed: {exc}")
             status_placeholder.empty()
 
-    # Step 2/3 - Review & Export (Tabs)
+    # Step 2/3 — Review & Export (Tabs)
     if st.session_state.draft_df is not None:
         df = st.session_state.draft_df
         if not st.session_state.is_excel_pipeline:
@@ -198,11 +286,10 @@ def main():
             st.subheader("AI Draft Responses")
 
             if st.session_state.is_excel_pipeline:
-                # Dynamic rendering: original columns editable, _AI_Status pinned as read-only
                 edited_df = st.data_editor(
                     df,
                     hide_index=True,
-                    use_container_width=True,
+                    width="stretch",
                     height=600,
                     column_config={
                         "_AI_Status": st.column_config.TextColumn("AI Status", disabled=True),
@@ -210,11 +297,10 @@ def main():
                     disabled=["_AI_Status"],
                 )
             else:
-                # Fixed PDF-pipeline schema
                 edited_df = st.data_editor(
                     df,
                     hide_index=True,
-                    use_container_width=True,
+                    width="stretch",
                     height=600,
                     column_order=[
                         "question_id",
@@ -226,7 +312,7 @@ def main():
                         "reasoning",
                     ],
                     column_config={
-                        "flag_for_human_review": None,  # hide column
+                        "flag_for_human_review": None,
                         "question_text": st.column_config.TextColumn(
                             "question_text", disabled=True, width="large"
                         ),

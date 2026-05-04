@@ -7,3 +7,5 @@ openpyxl
 pdfplumber
 pymupdf
 xlsxwriter
+openai
+anthropic

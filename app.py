@@ -70,18 +70,6 @@ def sidebar_inputs():
         )
         analyze_clicked = st.button("🚀 Analyze & Process Files", type="primary", width="stretch")
 
-        # ---------------------------------------------------------
-        # כפתור זמני למפתחים - לבדיקת עיצוב הממשק בשנייה אחת!
-        # ---------------------------------------------------------
-        if st.sidebar.button("🧪 טען נתוני בדיקה (לעיצוב ה-UI)"):
-            dummy_data = [
-                {"question_id": "Q1", "question_text": "האם המערכת תומכת ב-SSO?", "proposed_yes_no": "Yes", "proposed_comments": "תומכים ב-Okta ו-SAML.", "confidence_level": "High", "reasoning": "נמצא במאגר", "Status": "✅ OK"},
-                {"question_id": "Q2", "question_text": "האם יש תרשים זרימה לנתונים?", "proposed_yes_no": "No", "proposed_comments": "אין מידע זמין במאגר.", "confidence_level": "Low", "reasoning": "לא נמצא אזכור", "Status": "⚠️ REVIEW"},
-                {"question_id": "Q3", "question_text": "האם הנתונים מוצפנים במנוחה?", "proposed_yes_no": "Yes", "proposed_comments": "מוצפן ב-AES-256.", "confidence_level": "High", "reasoning": "כתוב במפורש במסמך האבטחה", "Status": "✅ OK"},
-            ]
-            st.session_state.draft_df = pd.DataFrame(dummy_data)
-            st.rerun()
-        # ---------------------------------------------------------
 
         st.divider()
         st.subheader("Model Settings")
@@ -188,7 +176,7 @@ def main():
                 original_columns = questionnaire_df.columns.tolist()
                 rows_list = questionnaire_df.to_dict(orient="records")
                 total_rows = len(rows_list)
-                batch_size = 15
+                batch_size = 3
                 total_batches = math.ceil(total_rows / batch_size)
 
                 progress.progress(0.1, text=f"Processing {total_rows} rows in {total_batches} batch(es)...")

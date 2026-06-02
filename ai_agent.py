@@ -37,51 +37,40 @@ NAIVE_SYSTEM_PROMPT_ANSWER = (
 
 SYSTEM_INSTRUCTION_EXCEL = (
     "You are an expert AI Data Entry Assistant specializing in enterprise security and compliance questionnaires. "
-    "Your task is to analyze a batch of rows from a spreadsheet and fill in the missing empty columns based strictly "
-    "on the provided Knowledge Base (KB) text.\n\n"
-
+    "Your task is to analyze a batch of rows from a spreadsheet and fill in the missing empty columns based strictly on the provided Knowledge Base (KB) text.\n\n"
+    
     "You must rigorously adhere to the following operational constraints:\n\n"
 
     "1. DYNAMIC ANCHOR DETECTION:\n"
-    "Do not rely on hardcoded column names to find the subject. Analyze all provided key-value pairs in a given row "
-    "to dynamically deduce the core entity, system, or control being queried. Use this inferred subject to search the KB.\n\n"
+    "Do not rely on hardcoded column names to find the subject. Analyze all provided key-value pairs in a given row to dynamically deduce the core entity, system, or control being queried. Use this inferred subject to search the KB.\n\n"
 
-    "2. STRICT CATEGORICAL MATCHING (DATA VALIDATION):\n"
-    "Analyze the column headers and any placeholder text. If a cell or header implicitly represents a predefined list "
-    "of options (e.g., statuses separated by slashes '/', commas, pipes '|', or instructions like \"Choose one\"), "
-    "you MUST treat this as a strict dropdown menu. You are forbidden from generating free text for that column. "
-    "Map the KB data to EXACTLY one of the explicitly allowed options.\n\n"
+    "2. DYNAMIC FIELD INSTRUCTIONS (CATEGORICAL VS. DESCRIPTIVE):\n"
+    "Treat the column header as your formatting instruction. Read the exact text of the target column header:\n"
+    "- CATEGORICAL FIELDS: If the header explicitly lists allowed options (e.g., '(כן/לא/לא רלוונטי)', '[Met/Not Met]', 'Status'), you MUST output EXACTLY one of those listed options. If the KB supports the control, output the positive value (e.g., 'כן'). If it explicitly contradicts, output the negative.\n"
+    "- DESCRIPTIVE / OPEN-ENDED FIELDS: If the header asks for details, explanations, or does not provide a list of options (e.g., 'פירוט טכני', 'הערות', 'Implementation Details'), you must generate a professional, concise free-text summary based ONLY on the KB. \n"
+    "CRITICAL FOR OPEN TEXT: Never invent, assume, or guess details to make the answer sound better. If there is no relevant information in the KB to write a description, leave the field as an empty string \"\".\n\n"
 
     "3. ZERO INFERENCE FOR MISSING DATA:\n"
-    "If you are unsure, assume the data does not exist. Never invent data to be \"helpful\". Never write generic "
-    "placeholder phrases such as \"No information available\", \"N/A\", or \"Not found\". If the answer is not "
-    "explicitly in the KB, the generated value must be an empty string \"\".\n\n"
+    "If you are unsure, assume the data does not exist. Never write generic placeholder phrases such as 'No information available', 'N/A', or 'Not found'. If the answer is not explicitly in the KB, the generated value must be an empty string \"\".\n\n"
 
-    "4. CONFIDENCE TRACKING:\n"
-    "Add one special key named `_AI_Status` to your JSON output for each row. Set its value to \"OK\" if you "
-    "successfully mapped KB data to the row. Set it to \"REVIEW\" ONLY if the anchor subject itself is completely "
-    "missing from the KB.\n\n"
+    "4. CONFIDENCE TRACKING (AI STATUS):\n"
+    "Add a special key named `_AI_Status` to your JSON output for each row. \n"
+    "Set its value to \"OK\" ONLY if you successfully generated a definitive answer (e.g., 'כן' or a valid summary) for the target field based on explicit KB evidence. \n"
+    "Set its value to \"REVIEW\" if you left the target field empty as an empty string \"\" (e.g., because the subject is missing, details are lacking, or you are uncertain).\n\n"
 
     "5. CONTROLLED INFERENCE & SYNONYM RESOLUTION:\n"
-    "You are expected to make intelligent semantic deductions when terminology differs, BUT the underlying factual "
-    "meaning must remain 100% identical. You may resolve established industry synonyms and alternative phrasings "
-    "for the same concept. However, you are strictly forbidden from bridging conceptually distinct entities — "
-    "different security controls, different compliance frameworks, or different operational domains must never be "
-    "treated as interchangeable. If a deduction requires assuming any information not present in the KB, "
-    "you must reject it and return an empty string.\n\n"
+    "You are expected to make intelligent semantic deductions when terminology differs, BUT the underlying factual meaning must remain 100% identical. You may resolve established industry synonyms.\n\n"
 
     "6. EVIDENCE-BASED REASONING (MANDATORY CoT):\n"
-    "Before deciding on a value for any field, you must evaluate the conceptual bridge and record your reasoning "
-    "in the `_AI_Reasoning` key using this exact format: "
-    "\"Questionnaire asks for X. KB states Y. Is Y a direct factual equivalent of X? Yes/No.\" "
-    "Only if the answer is a definitive 'Yes' may you map the data. If 'No', the output for that field must be "
-    "an empty string \"\".\n\n"
+    "Before deciding on a value for any field, you must evaluate the conceptual bridge and record your reasoning in the `_AI_Reasoning` key using this exact format: 'Questionnaire asks for X. KB states Y. Is Y a direct factual equivalent of X? Yes/No.' Only if the answer is a definitive 'Yes' may you fill the field. If 'No', the output for that field must be an empty string \"\".\n\n"
 
     "7. OUTPUT FORMAT:\n"
-    "You must return a valid JSON array of objects. Every single object must contain ALL the original keys provided "
-    "in the input, plus the `_AI_Status` key and the `_AI_Reasoning` key. Do not drop any columns.\n"
-    "CRITICAL: DO NOT TRUNCATE THE ARRAY. You must output exactly the same number of rows as provided in the input."
-)
+    "You must return a valid JSON array of objects. CRITICAL: To prevent JSON corruption from maximum output limits, DO NOT return all original columns. Your output objects MUST contain ONLY the following keys:\n"
+    "1. The exact key name from the input row that represents the unique row identifier (e.g., Control ID, Question ID, זיהוי בקרה).\n"
+    "2. ANY AND ALL keys from the input row that originally had an empty string \"\" value. You must include these keys and provide your generated answer for them (or an empty string if no info).\n"
+    "3. \"_AI_Status\"\n"
+    "4. \"_AI_Reasoning\"\n"
+    "Do not invent new key names. Do not drop any rows. You must process and return exactly the same number of rows as provided in the input.\n" )
 
 NAIVE_SYSTEM_PROMPT_EXCEL = (
     "You are a helpful assistant. Fill in the missing columns in each row based on the provided "
@@ -383,10 +372,18 @@ def answer_excel_rows_batch(
                 else:
                     result = [result]
             if isinstance(result, list):
-                if len(result) < row_count:
-                    print(f"[Excel batch] Warning: output length {len(result)} < expected {row_count}. Retrying...")
-                    raise ValueError(f"Truncated JSON array: expected {row_count} items, got {len(result)}")
-                return result
+                if len(result) == row_count:
+                    # --- NEW MERGE LOGIC ---
+                    # Merge the AI's brief answers back into the original heavy rows
+                    merged_batch = []
+                    for orig_row, ai_row in zip(rows_batch, result):
+                        updated_row = orig_row.copy()
+                        # Update the original row with AI answers (only overriding existing keys or adding the AI keys)
+                        for key, value in ai_row.items():
+                            updated_row[key] = value
+                        merged_batch.append(updated_row)
+                    return merged_batch
+                    # ------------------------
         except Exception as e:
             msg = str(e)
             if "429" in msg or "RESOURCE_EXHAUSTED" in msg:

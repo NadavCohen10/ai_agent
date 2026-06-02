@@ -1,3 +1,6 @@
 .env*
 key_provider.py
 excel
+__pycache__
+שאלונים
+.DS_Store

@@ -1,123 +1,235 @@
-# HITL Security Questionnaire Assistant 🛡️🤖
+# AI Security Questionnaire Assistant 🛡️🤖
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)]()
 [![Streamlit](https://img.shields.io/badge/Streamlit-UI-red)]()
-[![Gemini](https://img.shields.io/badge/Gemini-2.5-orange)]()
+[![Gemini](https://img.shields.io/badge/Gemini-2.5_Flash-orange)]()
+[![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o-green)]()
+[![Anthropic](https://img.shields.io/badge/Anthropic-Claude_Sonnet-purple)]()
+[![Ollama](https://img.shields.io/badge/Ollama-Local_LLM-gray)]()
 
-**Tagline:** Automate, review, and export massive vendor security questionnaires using RAG, Gemini 2.5, and a Human-In-The-Loop UI. Now with Native Excel In-Place Filling — the AI fills your form without ever changing its structure.
-
----
-
-## Why This Matters
-Filling SOC 2 / HIPAA / PCI questionnaires is slow, error-prone, and painful. Raw PDFs are messy; naïvely sending the whole file to an LLM blows context windows and invites hallucinations. This project delivers a resilient, production-ready pipeline that cleans ugly PDFs, extracts questions without breaking sentences, answers them with your Knowledge Base, and routes low-confidence items to humans for quick approval and export.
-
-![Dashboard UI](link-to-screenshot.png)
+Automate Vendor Risk Assessment (VRA) and security compliance questionnaires using RAG, multiple LLM providers, and a Human-In-The-Loop Streamlit UI. Includes a privacy-safe Document Ingestion engine and an AI-driven CISO Interviewer that builds your organisation's security baseline — all without hallucinating facts.
 
 ---
 
-## Key Features
+## What This Does
 
-### PDF Pipeline
-1) **Intelligent PDF Parsing & Cleaning** — Aggressive RegEx normalization removes invisible newlines and fixes broken words before any LLM call.
-2) **Sentence-Aware Smart Chunking** — Custom splitter prefers `?` or `.` boundaries (≤4,000 chars) so questions are never cut in half.
-3) **Structured Outputs (JSON)** — `google-genai` + Pydantic schemas enforce strict JSON arrays for both extraction and answering.
-4) **Fault-Tolerant RAG Engine** — Batch answering (15 Qs/batch) with retries, 429/`RESOURCE_EXHAUSTED` handling, and backoff sleeps.
+Security teams spend hours answering the same SOC 2 / ISO 27001 / PCI-DSS questionnaires sent by customers and vendors. This tool:
 
-### Native Excel Mode (In-Place Filling)
-5) **Structure-Preserving In-Place Filling** — When an Excel questionnaire is uploaded, the system fills it row by row without ever rebuilding or restructuring the file. The downloaded output looks exactly like the original upload — same columns, same order — just with the answers filled in.
-6) **Dynamic Anchor Detection** — The AI does not rely on hardcoded column names like "Category" or "Column B". For each row it dynamically reads all key-value pairs and semantically identifies the core subject (e.g., "Antivirus", "Password Policy") to use as its Knowledge Base search term.
-7) **Strict Categorical Matching** — The AI automatically detects multiple-choice constraints in headers or placeholder cells (options separated by `/`, `,`, `|`, parentheses, or phrases like "Choose one:"). It restricts its generated answer to exactly one of the allowed options — acting like built-in data validation.
-8) **Clean Outputs** — If no matching data is found for a cell, the AI leaves it blank. It never writes "N/A" or "No information available" unless that is a valid allowed option.
-9) **Smart Row-Based Batching** — Excel rows are chunked by row count (15 rows per API call), completely separate from the character-based chunking used for PDFs. This prevents JSON corruption and keeps the system within free-tier rate limits.
-
-### Shared
-10) **Human-In-The-Loop UI** — Streamlit dashboard with `st.data_editor` to review and edit answers. In Native Excel Mode, a temporary `AI Status` column (OK / REVIEW) is displayed so reviewers can instantly spot rows where the anchor subject was missing from the Knowledge Base.
-11) **One-Click Excel Export** — Approved answers exported to `.xlsx` via `pandas` + `xlsxwriter`. The `AI Status` column and all other internal UI columns are automatically stripped from the download so the exported file is clean.
+1. **Ingests** your internal security policy documents locally (no data leaves your machine) and extracts a structured Knowledge Base.
+2. **Interviews** your CISO / security lead to fill 14 baseline controls that are missing from the KB — with a strict Zero Inference guarantee.
+3. **Answers** external questionnaires (Excel or PDF) automatically using the KB, with a HITL review step before export.
 
 ---
 
-## Architecture (How It Works)
+## Architecture
 
-### PDF Pipeline
-1. **Extraction**: Clean PDF text ➜ sentence-aware character-based chunking ➜ Gemini `ExtractionList` schema returns `{question_id, question_text}` JSON.
-2. **Batching & RAG**: Questions are answered in batches of 15 using the Knowledge Base; Pydantic `Answer` schema enforces structure.
-3. **Rate-Limit Resilience**: Automatic retries and cooldowns when 429/`RESOURCE_EXHAUSTED` occurs.
-4. **HITL Review**: Streamlit UI shows metrics, confidence, and flags; humans edit only the relevant fields.
-5. **Export**: Approved dataframe ➜ Excel (`completed_questionnaire.xlsx`).
+```
+ai_agent/
+├── app/
+│   ├── app.py                      # Main Assessor page (KB upload + questionnaire)
+│   ├── exporter.py                 # Excel export helper
+│   └── pages/
+│       ├── 1_document_ingestion.py # Local document → KB pipeline
+│       └── 2_ciso_interviewer.py   # Baseline Profile wizard
+│
+├── agents/
+│   ├── assessor_agent.py           # Questionnaire answering logic + prompts
+│   └── interviewer_agent.py        # CISO interview logic + 14 baseline topics
+│
+├── core/
+│   └── llm_provider.py             # Strategy Pattern — Gemini / OpenAI / Anthropic / Ollama
+│
+├── ingestion/
+│   ├── kb_builder.py               # Ollama-powered local document scanner
+│   └── document_parser.py          # PDF / Excel / TXT / CSV text extractor
+│
+├── data/
+│   ├── mock_organization/          # Sample policy documents (generated)
+│   └── Mock_Org_KB.xlsx            # Generated Knowledge Base (git-ignored)
+│
+└── generate_mock_org.py            # Script to create sample policy documents
+```
 
-### Native Excel Pipeline
-1. **Loading**: Excel file is read with `openpyxl` via pandas. All columns are preserved — including completely empty ones, since those are the answer columns the AI needs to fill. `NaN` values are replaced with empty strings for clean JSON serialisation.
-2. **Row-Based Batching**: The DataFrame is converted to a list of row dictionaries and chunked into sub-lists of 15 rows. Each sub-list becomes one API call. Row-count batching is used exclusively here — never character-count — to prevent JSON objects from being split mid-value.
-3. **Dynamic Inference**: For each batch, the LLM receives the exact column headers and all row data. It dynamically detects the anchor subject per row, applies context mapping against the Knowledge Base, and respects categorical constraints derived from the column headers or placeholder values.
-4. **Safe Reassembly**: After all batches return, the final DataFrame is reconstructed with `pd.DataFrame(results, columns=original_headers)` — enforcing that every original column exists regardless of what the LLM returned. An `_AI_Status` column (OK/REVIEW) is appended for HITL review.
-5. **Export**: The `_AI_Status` column and all other UI-only columns are stripped before writing to `.xlsx`, producing a clean file that matches the original upload structure.
+---
+
+## Three Workflows
+
+### 1. Document Ingestion (`pages/1_document_ingestion.py`)
+Scans a local folder of security policy documents (`.txt`, `.md`) and extracts structured controls using a **local Ollama model** — no document content is ever sent to an external API.
+
+- Runs entirely on-premises via Ollama
+- Extracts `domain` + `control_statement` per policy clause
+- Assigns each control to one of 10 standard security domains
+- Saves the result to `data/Mock_Org_KB.xlsx`
+
+### 2. CISO Interviewer — Company Baseline Profile (`pages/2_ciso_interviewer.py`)
+A guided wizard that checks whether 14 foundational security controls are present in the KB. For each missing control it interviews the user, collects the required specifics, and formalises the answer.
+
+**14 Baseline Topics:**
+
+| Domain | Topic |
+|---|---|
+| Governance | InfoSec Policy |
+| Governance | CISO / Security Officer |
+| Identity & Access Management | MFA / 2FA |
+| Identity & Access Management | RBAC & Least Privilege |
+| Identity & Access Management | Offboarding & Access Revocation |
+| Data Protection | Encryption at Rest |
+| Data Protection | Encryption Standards |
+| Vulnerability Management | Penetration Testing |
+| Vulnerability Management | Critical Patch SLA |
+| Incident Response | Incident Response Plan |
+| Incident Response | Breach Notification SLA |
+| HR Security | Background Checks |
+| HR Security | Security Awareness Training |
+| Business Continuity | BCP / DRP |
+
+**Zero Inference Guarantee:** The LLM is forbidden from inventing timeframes, SLAs, frequencies, scope statements, or technology names. If the user's answer is vague, the agent asks a targeted follow-up question. Only when all required specifics are provided does it produce a formal, regulatory-style control statement — always in professional English.
+
+The wizard is **optional and non-blocking**. A visual progress bar (`X / 14 complete`) tracks completion. Users can skip topics or navigate away at any time.
+
+### 3. Assessor Agent (`app/app.py`)
+Answers external vendor questionnaires (Excel or PDF) using the Knowledge Base built in steps 1 and 2.
+
+**Excel mode (in-place filling):**
+- Preserves the original file structure column-for-column
+- Dynamic Anchor Detection — identifies the subject per row without relying on hardcoded column names
+- Strict Categorical Matching — respects dropdown constraints (`Yes/No`, `Compliant/Non-Compliant`, etc.)
+- Zero Inference — leaves cells blank rather than writing "N/A" or placeholder text
+- Adds `_AI_Status` (`OK` / `REVIEW`) for HITL review
+
+**PDF mode:**
+- Sentence-aware chunking keeps questions intact
+- Batch answering (configurable batch size) with retry / backoff
+
+---
+
+## Multi-Provider LLM Support (Strategy Pattern)
+
+All LLM calls go through a common `BaseLLMProvider` interface. Switch providers from the sidebar without changing any business logic.
+
+| Provider | Best For | Key |
+|---|---|---|
+| **Gemini 2.5 Flash** | Assessor (speed + cost) | `GEMINI_API_KEY` in `.env` |
+| **OpenAI GPT-4o** | Assessor (accuracy) | `CHATGPT_API_KEY` in `.env` |
+| **Anthropic Claude Sonnet** | Assessor (reasoning) | `ANTHROPIC_API_KEY` in `.env` |
+| **Ollama (local)** | Document Ingestion & CISO Interview (privacy) | No key — runs locally |
+
+Structured output (JSON schema enforcement) is supported for all four providers.
 
 ---
 
 ## Prerequisites
-- Python 3.10+  
-- Google Gemini API key (Free tier works; set rate limits accordingly)  
+
+- Python 3.10+
+- [Ollama](https://ollama.ai) installed locally with at least one model pulled:
+  ```bash
+  ollama pull gemma
+  ```
+- At least one cloud LLM API key (for the Assessor Agent)
 
 ---
 
 ## Installation
+
 ```bash
-git clone https://github.com/your-org/hitl-security-questionnaire-assistant.git
-cd hitl-security-questionnaire-assistant
+git clone https://github.com/your-org/ai-security-questionnaire-assistant.git
+cd ai-security-questionnaire-assistant/ai_agent
+
 python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
-Create a `.env` (or set env vars) with:
-```
-GOOGLE_API_KEY=your_gemini_key_here
+Create a `.env` file in the project root with the keys you have:
+
+```env
+GEMINI_API_KEY=your_gemini_key
+CHATGPT_API_KEY=your_openai_key
+ANTHROPIC_API_KEY=your_anthropic_key
 ```
 
 ---
 
 ## Usage
+
 ```bash
-streamlit run app.py
+streamlit run app/app.py
 ```
-1. Upload the Knowledge Base (txt/pdf/csv/xlsx) and the blank questionnaire (xlsx/pdf) in the sidebar.
-2. Click **Analyze & Process Files**. The pipeline auto-detects the questionnaire format and runs the appropriate flow.
-   - **PDF questionnaire**: Extracts questions ➜ answers them in batches ➜ shows progress per batch.
-   - **Excel questionnaire**: Loads the file preserving all columns ➜ processes rows in batches of 15 ➜ fills cells in-place.
-3. Review in the **Review & Edit** tab.
-   - *PDF mode*: Edit `proposed_yes_no` / `proposed_comments`, check confidence flags and reasoning.
-   - *Excel mode*: Edit any cell directly. Use the `AI Status` column (OK / REVIEW) to quickly spot rows that need attention.
-4. Click **Approve Final Answers**.
-5. In the **Export Options** tab, download `completed_questionnaire.xlsx`. The exported file matches the original structure exactly — no internal columns included.
+
+### Recommended first-run order
+
+1. **Generate sample documents** (optional, for testing):
+   ```bash
+   python generate_mock_org.py
+   ```
+
+2. **Document Ingestion** → sidebar page `1 Document Ingestion`
+   - Point to your policy document folder
+   - Select Ollama model and click **Scan Local Directory**
+   - Save the extracted KB to `data/Mock_Org_KB.xlsx`
+
+3. **CISO Interviewer** → sidebar page `2 CISO Interviewer`
+   - Review the progress bar — see which of 14 baseline topics are already covered
+   - Answer the interview questions; the agent will ask follow-ups until it has enough specifics
+   - Approve each proposed control to add it to the KB automatically
+
+4. **Assessor Agent** → main page
+   - Upload the KB and a blank questionnaire (Excel or PDF)
+   - Choose your LLM provider from the sidebar
+   - Click **Analyze & Process Files**
+   - Review answers in the **Review & Edit** tab
+   - Export the completed questionnaire
 
 ---
 
 ## Tech Stack
-- **LLM**: Google GenAI (Gemini 2.5 Flash) via `google-genai` (new SDK — not the deprecated `google-generativeai`)
-- **Validation**: Pydantic models for strict JSON schemas
-- **UI**: Streamlit (`st.data_editor`, metrics, tabs)
-- **Data**: pandas, `openpyxl` (Excel read/write), pdfplumber / PyMuPDF (PDF parsing)
-- **Export**: xlsxwriter
+
+| Layer | Technology |
+|---|---|
+| UI | Streamlit (multi-page, `st.chat_message`, `st.data_editor`) |
+| LLM Abstraction | Custom Strategy Pattern (`BaseLLMProvider`) |
+| Cloud LLMs | `google-genai`, `openai`, `anthropic` |
+| Local LLM | Ollama REST API (`/api/chat`) |
+| Data | pandas, openpyxl |
+| PDF Parsing | pdfplumber |
+| Export | xlsxwriter |
+| Config | python-dotenv |
 
 ---
 
-## Notes & Best Practices
-- Free tier is 15 RPM — the pipeline includes retries and cooldowns; keep the app open during long runs.
-- Provide a concise, high-quality Knowledge Base to minimize “Low confidence” flags and “REVIEW” statuses.
-- PDFs vary widely; the cleaning + sentence-aware chunker is optimized for noisy questionnaires but can be tweaked via `clean_extracted_text` and `get_smart_chunks`.
-- For Excel questionnaires, include clear column headers that describe the expected answer format (e.g., “Status (Yes/No/Partial)”). The AI uses these as data-validation rules and will restrict its output accordingly.
-- Make sure you are using `google-genai` (not `google-generativeai`) to avoid deprecation warnings. If both are installed, run `pip uninstall google-generativeai`.
+## Privacy Model
+
+| Component | Data Destination |
+|---|---|
+| Document Ingestion | Local only (Ollama) |
+| CISO Interviewer | Local only (Ollama) |
+| Assessor Agent | Cloud LLM of your choice (or Ollama) |
+
+Internal policy documents and interview answers never leave the machine when using Ollama for ingestion and the CISO wizard.
+
+---
+
+## Notes
+
+- **Assessor accuracy improves significantly** after completing Document Ingestion and the CISO Baseline Profile — the KB is the single biggest factor in answer quality.
+- **Zero Inference is non-negotiable** in the CISO Interviewer. If you get multiple follow-up questions, the agent genuinely needs those specifics to produce a defensible policy control.
+- **Ollama model quality matters** — `gemma2` or `llama3` produce noticeably better extractions than the base `gemma` model for complex policy documents.
+- For cloud LLMs, if no API key is found in `.env`, the sidebar shows a manual input field.
 
 ---
 
 ## Roadmap
-- Add vector store retrieval to further tighten grounding.
-- Support round-trip PDF writing for forms.
-- Role-based access and audit logging for approvals.
-- Per-column confidence scores in Native Excel Mode.
-- Auto-detection of sheet tabs in multi-sheet Excel questionnaires.
+
+- Vector store retrieval (FAISS / ChromaDB) for large KB files
+- Round-trip PDF writing for fillable forms
+- Per-cell confidence scores in Native Excel Mode
+- Audit log for HITL approvals
+- Multi-sheet Excel questionnaire support
 
 ---
 
 ## License
-MIT License. Contributions welcome!  
+
+MIT License. Contributions welcome!

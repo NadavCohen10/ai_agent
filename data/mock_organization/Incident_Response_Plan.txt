@@ -1,0 +1,30 @@
+INCIDENT RESPONSE PLAN
+Organization: Acme Corp | Document ID: POL-IR-002 | Version: 2.1 | Effective: 2023-11-01
+
+1. INCIDENT CLASSIFICATION & SEVERITY LEVELS
+All security incidents are classified into four severity tiers upon detection. Severity 1 (Critical)
+includes active ransomware, confirmed data breaches affecting more than 500 records, or complete
+outage of a critical production system; response must begin within 15 minutes of detection.
+Severity 2 (High) covers unauthorized access to sensitive systems or malware containment events;
+response SLA is 1 hour. Severity 3 (Medium) includes policy violations or failed intrusion attempts;
+response SLA is 4 hours. Severity 4 (Low) covers informational alerts requiring investigation;
+response SLA is 24 hours. All incidents, regardless of severity, must be logged in the SIEM and
+assigned a ticket in the incident tracking system within 30 minutes of classification.
+
+2. CONTAINMENT, ERADICATION & RECOVERY
+Upon confirmation of a Severity 1 or 2 incident, the Incident Response Team (IRT) must isolate
+affected systems from the network within 30 minutes using automated EDR quarantine or manual VLAN
+segregation. No affected system may be wiped or reimaged before a forensic image is captured and
+preserved to a write-protected evidence store. Eradication steps must be documented in real time in
+the incident ticket. Recovery to production is gated on a sign-off from both the IRT Lead and the
+system owner. Full root-cause analysis (RCA) must be completed and submitted to the CISO within
+5 business days of incident closure.
+
+3. NOTIFICATION & REPORTING OBLIGATIONS
+Any incident involving personal data of EU residents must be assessed for GDPR breach notification
+requirements within 24 hours of discovery. If a reportable breach is confirmed, the relevant
+supervisory authority must be notified within 72 hours per Article 33 of the GDPR. The Legal and
+Compliance team must be engaged immediately for any incident classified Severity 1 or 2. External
+communication, including press statements or customer notifications, may only be issued by the
+VP of Communications in coordination with Legal. A post-incident report must be distributed to
+executive leadership within 10 business days of closure.

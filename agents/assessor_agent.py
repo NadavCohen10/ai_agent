@@ -13,7 +13,7 @@ import re
 import time
 from typing import Any, Iterable, List, Optional
 
-from llm_provider import BaseLLMProvider
+from core.llm_provider import BaseLLMProvider
 
 
 # ── System prompts ────────────────────────────────────────────────────────────

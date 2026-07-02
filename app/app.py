@@ -1,3 +1,4 @@
+import sys, os; sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 """
 Streamlit UI for the HITL Security Questionnaire Assistant.
 Polished SaaS-style dashboard with sidebar inputs, metrics, tabs, and stateful flow.
@@ -7,18 +8,18 @@ import math
 import pandas as pd
 import streamlit as st
 
-from ai_agent import (
+from agents.assessor_agent import (
     answer_excel_rows_batch,
     extract_questions,
     answer_questions_in_batches,
 )
-from llm_provider import GeminiProvider, OpenAIProvider, AnthropicProvider, OllamaProvider, BaseLLMProvider
-from document_parser import (
+from core.llm_provider import GeminiProvider, OpenAIProvider, AnthropicProvider, OllamaProvider, BaseLLMProvider
+from ingestion.document_parser import (
     extract_kb_text,
     parse_questionnaire_pdf,
     load_questionnaire_excel_as_dataframe,
 )
-from exporter import generate_excel
+from app.exporter import generate_excel
 
 
 st.set_page_config(page_title="HITL Security Questionnaire Assistant", layout="wide")

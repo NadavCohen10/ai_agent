@@ -1,0 +1,28 @@
+ACCESS CONTROL POLICY
+Organization: Acme Corp | Document ID: POL-AC-001 | Version: 3.2 | Effective: 2024-01-15
+
+1. PASSWORD REQUIREMENTS
+All user accounts must be protected by passwords of a minimum length of 14 characters, containing
+at least one uppercase letter, one lowercase letter, one numeric digit, and one special character
+(!@#$%^&*). Passwords must be rotated every 90 days and cannot be reused within the last 12
+generations. The use of the user's name, email address, or the word "password" in any form is
+strictly prohibited. Failed login attempts are locked after 5 consecutive failures, triggering a
+30-minute account lockout and an automated alert to the Security Operations Center (SOC).
+
+2. MULTI-FACTOR AUTHENTICATION (MFA)
+MFA is mandatory for all employee accounts without exception, including service accounts with
+interactive login capabilities. The approved second factors are: TOTP authenticator apps (Google
+Authenticator, Microsoft Authenticator), hardware security keys (FIDO2/WebAuthn), or SMS OTP as
+a last-resort fallback for non-privileged users only. Privileged Access Workstations (PAWs) used
+by system administrators must use hardware security keys exclusively. MFA bypass is forbidden and
+any request to disable MFA must be approved in writing by the CISO and documented in the change
+management system.
+
+3. ROLE-BASED ACCESS CONTROL (RBAC) & LEAST PRIVILEGE
+Access to systems and data is granted on a least-privilege basis using a formal Role-Based Access
+Control (RBAC) model. All access requests must be submitted via the IT Service Desk ticketing
+system and approved by both the employee's direct manager and the relevant system owner. Access
+rights are reviewed quarterly by department heads and the IT Security team. Upon employee
+termination, all access must be revoked within 4 business hours of the HR notification. Privileged
+accounts (domain admin, root, DBA) are subject to Privileged Access Management (PAM) controls and
+all sessions are recorded and retained for 12 months.

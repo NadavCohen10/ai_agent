@@ -1,0 +1,32 @@
+NETWORK ARCHITECTURE & SECURITY OVERVIEW
+Organization: Acme Corp | Document ID: DOC-NET-005 | Version: 1.8 | Effective: 2024-03-01
+
+1. NETWORK SEGMENTATION
+The Acme Corp network is divided into five security zones enforced by next-generation firewalls
+(Palo Alto PA-5250 cluster in active-active HA): External DMZ, Internal DMZ, Corporate LAN,
+Production Environment, and Management Network. All inter-zone traffic is denied by default and
+explicitly permitted only by approved firewall rules reviewed quarterly. The Production Environment
+is further segmented by application tier (Web, Application, Database) using micro-segmentation
+enforced by NSX-T. No direct communication is permitted between the Corporate LAN and the
+Production Database tier; all access is brokered through the Application tier or a designated
+jump server in the Management Network.
+
+2. PERIMETER & ENDPOINT SECURITY
+All internet-bound traffic is routed through a redundant pair of Zscaler Internet Access (ZIA)
+nodes acting as a cloud-based Secure Web Gateway (SWG), providing TLS inspection, URL filtering,
+and inline CASB capabilities. Remote access for employees is provided exclusively via Zscaler
+Private Access (ZPA) using a Zero Trust Network Access (ZTNA) model; traditional VPN is deprecated
+and disabled. All endpoints must run CrowdStrike Falcon agent (Prevent + Insight modules) and
+must pass a device posture check (OS patch level within 30 days, disk encryption enabled, agent
+running) before ZPA access is granted. Unmanaged devices are categorically denied access to
+internal resources.
+
+3. ENCRYPTION & CERTIFICATE MANAGEMENT
+All data in transit across any network boundary must be encrypted using TLS 1.2 or higher; TLS 1.0
+and 1.1 are explicitly disabled on all load balancers and application servers. Internal services
+communicate over mTLS where supported. Public-facing TLS certificates are managed via DigiCert
+with a maximum validity of 398 days and are renewed automatically 30 days before expiration using
+ACME protocol integration. All data at rest in the Production Environment is encrypted using
+AES-256; encryption key management is handled by HashiCorp Vault with AWS KMS as the seal backend.
+Encryption key rotation is performed annually for data-at-rest keys and every 90 days for
+transit/session keys.

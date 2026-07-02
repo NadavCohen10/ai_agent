@@ -1,6 +1,33 @@
-.env*
-key_provider.py
-excel
-__pycache__
-שאלונים
+# Environment & secrets
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Data & outputs
+data/Mock_Org_KB.xlsx
+response/
+test/
+
+# OS
 .DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+
+# Legacy / one-off files
+excel/
+שאלונים/

@@ -1,0 +1,31 @@
+DATA BACKUP & RECOVERY PROCEDURE
+Organization: Acme Corp | Document ID: PROC-BK-003 | Version: 2.4 | Effective: 2023-09-01
+
+1. BACKUP SCHEDULE & RETENTION
+All production databases and file servers are subject to the following backup schedule: full backups
+are performed every Sunday at 01:00 UTC, differential backups every weekday night at 02:00 UTC,
+and transaction log backups every 4 hours for all SQL-based databases. Backup retention periods
+are as follows: daily backups are retained for 30 days, weekly backups for 90 days, and monthly
+backups (taken on the first Sunday of each month) for 12 months. Backups of systems that process
+payment card data (PCI-DSS scope) are retained for a minimum of 12 months in accordance with
+PCI-DSS Requirement 9.8.1. All retention schedules are enforced by automated lifecycle policies
+in the backup platform and reviewed annually by the IT Manager.
+
+2. BACKUP STORAGE & ENCRYPTION
+All backups are written to a primary Veeam Backup & Replication repository located in the on-premises
+data center and replicated within 2 hours to an immutable S3-compatible object storage bucket in
+AWS (us-east-1 region). The offsite S3 bucket is configured with Object Lock in Compliance mode
+with a 30-day retention lock, ensuring backups cannot be deleted or overwritten even by
+administrators. All backup data is encrypted at rest using AES-256 and in transit using TLS 1.2.
+Backup encryption keys are stored separately from the backup data in HashiCorp Vault and are
+rotated annually. Access to the backup repository console is restricted to the Backup Administrator
+role and requires MFA.
+
+3. RECOVERY TESTING & RTO/RPO TARGETS
+Recovery Time Objectives (RTO) and Recovery Point Objectives (RPO) are defined per system tier.
+Tier 1 (mission-critical: ERP, payment processing) has an RTO of 4 hours and an RPO of 1 hour.
+Tier 2 (business-critical: CRM, email) has an RTO of 8 hours and an RPO of 4 hours. Tier 3
+(standard: internal wikis, dev environments) has an RTO of 24 hours and an RPO of 24 hours.
+Full recovery tests are conducted quarterly for all Tier 1 systems and semi-annually for Tier 2
+systems, with results documented and reviewed by the IT Manager and CISO. Any failed recovery
+test automatically triggers a remediation plan with a 30-day resolution deadline.

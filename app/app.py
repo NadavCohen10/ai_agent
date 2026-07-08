@@ -12,6 +12,7 @@ from agents.assessor_agent import (
     answer_excel_rows_batch,
     extract_questions,
     answer_questions_in_batches,
+    EXCEL_BATCH_SIZE,
 )
 from core.llm_provider import GeminiProvider, OpenAIProvider, AnthropicProvider, OllamaProvider, BaseLLMProvider
 from ingestion.document_parser import (
@@ -177,7 +178,7 @@ def main():
                 original_columns = questionnaire_df.columns.tolist()
                 rows_list = questionnaire_df.to_dict(orient="records")
                 total_rows = len(rows_list)
-                batch_size = 3
+                batch_size = EXCEL_BATCH_SIZE
                 total_batches = math.ceil(total_rows / batch_size)
 
                 progress.progress(0.1, text=f"Processing {total_rows} rows in {total_batches} batch(es)...")
@@ -193,12 +194,17 @@ def main():
                         text=f"Batch {b_idx + 1} of {total_batches} done.",
                     )
 
-                result_df = pd.DataFrame(master_results, columns=original_columns)
-                ai_statuses = [
-                    row.get("_AI_Status", "") if isinstance(row, dict) else ""
-                    for row in master_results
-                ]
-                result_df["_AI_Status"] = ai_statuses
+                # Build DataFrame from dicts — preserves ALL columns the LLM returned,
+                # including _AI_Status, _AI_Reasoning, and any filled Hebrew fields.
+                # original_columns is only used as a fallback column-order hint below.
+                result_df = pd.DataFrame(master_results)
+                # Ensure every original column is present (guard against LLM omissions)
+                for col in original_columns:
+                    if col not in result_df.columns:
+                        result_df[col] = ""
+                # Reorder: original columns first, then the appended AI columns at the end
+                ai_cols = [c for c in result_df.columns if c not in original_columns]
+                result_df = result_df[original_columns + ai_cols]
                 progress.progress(1.0, text="Done.")
                 status_placeholder.empty()
                 st.session_state.is_excel_pipeline = True
@@ -275,6 +281,7 @@ def main():
             st.subheader("AI Draft Responses")
 
             if st.session_state.is_excel_pipeline:
+                _ai_cols_present = [c for c in ["_AI_Status", "_AI_Reasoning"] if c in df.columns]
                 edited_df = st.data_editor(
                     df,
                     hide_index=True,
@@ -282,8 +289,11 @@ def main():
                     height=600,
                     column_config={
                         "_AI_Status": st.column_config.TextColumn("AI Status", disabled=True),
+                        "_AI_Reasoning": st.column_config.TextColumn(
+                            "AI Reasoning", disabled=True, width="large"
+                        ),
                     },
-                    disabled=["_AI_Status"],
+                    disabled=_ai_cols_present,
                 )
             else:
                 edited_df = st.data_editor(

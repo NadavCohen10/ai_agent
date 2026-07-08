@@ -7,7 +7,7 @@ import pandas as pd
 
 
 # UI-only columns that should never appear in the exported file
-_UI_COLUMNS = {"Status", "flag_for_human_review", "_AI_Status"}
+_UI_COLUMNS = {"Status", "flag_for_human_review", "_AI_Status", "_AI_Reasoning"}
 
 
 def generate_excel(df: pd.DataFrame) -> BytesIO:

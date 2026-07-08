@@ -112,7 +112,7 @@ All LLM calls go through a common `BaseLLMProvider` interface. Switch providers 
 |---|---|---|
 | **Gemini 2.5 Flash** | Assessor (speed + cost) | `GEMINI_API_KEY` in `.env` |
 | **OpenAI GPT-4o** | Assessor (accuracy) | `CHATGPT_API_KEY` in `.env` |
-| **Anthropic Claude Sonnet** | Assessor (reasoning) | `ANTHROPIC_API_KEY` in `.env` |
+| **Anthropic Claude Haiku** | Assessor (reasoning) | `ANTHROPIC_API_KEY` in `.env` |
 | **Ollama (local)** | Document Ingestion & CISO Interview (privacy) | No key — runs locally |
 
 Structured output (JSON schema enforcement) is supported for all four providers.

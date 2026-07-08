@@ -4,7 +4,7 @@
 [![Streamlit](https://img.shields.io/badge/Streamlit-UI-red)]()
 [![Gemini](https://img.shields.io/badge/Gemini-2.5_Flash-orange)]()
 [![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o-green)]()
-[![Anthropic](https://img.shields.io/badge/Anthropic-Claude_Sonnet-purple)]()
+[![Anthropic](https://img.shields.io/badge/Anthropic-Claude_Haiku-yellow)]()
 [![Ollama](https://img.shields.io/badge/Ollama-Local_LLM-gray)]()
 
 Automate Vendor Risk Assessment (VRA) and security compliance questionnaires using RAG, multiple LLM providers, and a Human-In-The-Loop Streamlit UI. Includes a privacy-safe Document Ingestion engine and an AI-driven CISO Interviewer that builds your organisation's security baseline — all without hallucinating facts.

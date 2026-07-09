@@ -307,6 +307,40 @@ Return ONLY the JSON object. No explanation, no markdown.\
 """
 
 
+# ── Module-level coverage helpers (no LLM required) ──────────────────────────
+# Exported as standalone functions so the Document Ingestion page can run gap
+# analysis without needing an Ollama connection or a CISOInterviewer instance.
+
+def compute_coverage(
+    kb_df: pd.DataFrame, answered_ids: list[str] | None = None
+) -> tuple[int, set[str]]:
+    """
+    Return (covered_count, covered_id_set).
+
+    Coverage = keyword match in KB  OR  explicitly answered this session.
+    answered_ids is a list stored in st.session_state (must be JSON-safe).
+    """
+    all_text = (
+        " ".join(kb_df["control_statement"].str.lower().tolist())
+        if not kb_df.empty else ""
+    )
+    answered = set(answered_ids or [])
+    covered = {
+        t["id"] for t in BASELINE_TOPICS
+        if t["id"] in answered
+        or any(kw.lower() in all_text for kw in t["keywords"])
+    }
+    return len(covered), covered
+
+
+def find_baseline_gaps(
+    kb_df: pd.DataFrame, answered_ids: list[str] | None = None
+) -> list[dict]:
+    """Return BASELINE_TOPICS entries not yet covered by the KB or answered_ids."""
+    _, covered = compute_coverage(kb_df, answered_ids)
+    return [t for t in BASELINE_TOPICS if t["id"] not in covered]
+
+
 class CISOInterviewer:
     """
     Drives the Company Baseline Profile wizard.
@@ -317,36 +351,17 @@ class CISOInterviewer:
     def __init__(self, provider: BaseLLMProvider):
         self.provider = provider
 
-    # ── Coverage helpers ──────────────────────────────────────────────────────
+    # ── Coverage helpers (delegate to module-level functions) ─────────────────
 
     def compute_coverage(
         self, kb_df: pd.DataFrame, answered_ids: list[str] | None = None
     ) -> tuple[int, set[str]]:
-        """
-        Return (covered_count, covered_id_set).
-
-        Coverage = keyword match in KB  OR  explicitly answered this session.
-        answered_ids is a list stored in st.session_state (must be JSON-safe).
-        """
-        all_text = (
-            " ".join(kb_df["control_statement"].str.lower().tolist())
-            if not kb_df.empty else ""
-        )
-        answered = set(answered_ids or [])
-
-        covered = {
-            t["id"] for t in BASELINE_TOPICS
-            if t["id"] in answered
-            or any(kw.lower() in all_text for kw in t["keywords"])
-        }
-        return len(covered), covered
+        return compute_coverage(kb_df, answered_ids)
 
     def find_baseline_gaps(
         self, kb_df: pd.DataFrame, answered_ids: list[str] | None = None
     ) -> list[dict]:
-        """Return BASELINE_TOPICS not yet covered."""
-        _, covered = self.compute_coverage(kb_df, answered_ids)
-        return [t for t in BASELINE_TOPICS if t["id"] not in covered]
+        return find_baseline_gaps(kb_df, answered_ids)
 
     # ── Interview helpers ─────────────────────────────────────────────────────
 

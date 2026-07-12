@@ -14,110 +14,12 @@ import time
 from typing import Any, Iterable, List, Optional
 
 from core.llm_provider import BaseLLMProvider
-
-
-# ── System prompts ────────────────────────────────────────────────────────────
-
-SYSTEM_INSTRUCTION_ANSWER = (
-    "You are an Expert IT Security Officer. Complete the Vendor Security Questionnaire "
-    "based ONLY on the provided Knowledge Base.\n"
-    "Apply 'Semantic Bridging': e.g., if the KB says 'CrowdStrike', recognize it as 'Antivirus'. "
-    "If it says 'AWS Security Groups', recognize it as a firewall.\n"
-    "If information is missing, DO NOT guess. State 'No information available' and set confidence to Low.\n"
-    "You must analyze the entire questionnaire and provide an answer for EVERY SINGLE question provided to you.\n"
-    "Return a JSON object with an 'answers' key containing an array of answer objects."
-)
-
-NAIVE_SYSTEM_PROMPT_ANSWER = (
-    "You are a helpful assistant. Answer the provided security questionnaire questions "
-    "based on the Knowledge Base. Return a JSON object with an 'answers' key containing "
-    "an array of answer objects, each with: question_id, question_text, proposed_yes_no, "
-    "proposed_comments, confidence_level, reasoning, flag_for_human_review."
-)
-
-SYSTEM_INSTRUCTION_EXCEL = (
-    "You are a strict JSON-to-JSON data processor specializing in enterprise security and compliance questionnaires. "
-    "You receive a JSON array of spreadsheet rows and must return that same array — every row fully preserved — "
-    "with your assessment appended to each object. "
-    "Your primary objective is to evaluate each row against the provided Knowledge Base (KB) while FLAWLESSLY preserving the original data structure.\n\n"
-
-    "You must rigorously adhere to the following rules:\n\n"
-
-    "1. DYNAMIC REPLICATION:\n"
-    "You MUST return the ENTIRE original JSON object for EVERY row. "
-    "Copy every single key-value pair exactly as it appears in the input — even keys you did not use, "
-    "even keys whose values are empty strings. Do not alter, translate, or reformat any original value.\n\n"
-
-    "2. NO ASSUMPTIONS ABOUT COLUMN NAMES:\n"
-    "Do not hardcode expectations for any specific column name (e.g., do not assume 'הבקרה', 'ראיות נדרשות', "
-    "or any other fixed key exists). The input schema varies between questionnaires. "
-    "Dynamically analyze all key-value pairs in each row to deduce the core entity, control, or subject being queried, "
-    "then search the KB for that subject.\n\n"
-
-    "3. NO OMISSIONS:\n"
-    "Do NOT omit, drop, summarize, or truncate ANY original key or its value under any circumstances. "
-    "Returning a partial object corrupts the database and is a critical failure.\n\n"
-
-    "4. APPEND ONLY — TWO MANDATORY ASSESSMENT FIELDS:\n"
-    "After copying all original keys, append EXACTLY these two fields to each object:\n"
-    "  a) \"_AI_Status\": Your confidence assessment — choose ONE of:\n"
-    "       \"OK\"      — You found explicit KB evidence and produced a definitive answer for every empty field.\n"
-    "       \"REVIEW\"  — The anchor subject was found but details are incomplete or uncertain.\n"
-    "       \"NO_DATA\" — The anchor subject is entirely absent from the KB.\n"
-    "  b) \"_AI_Reasoning\": Your brief chain-of-thought using this exact format:\n"
-    "       'Questionnaire asks for [X]. KB states [Y]. Is Y a direct factual equivalent of X? Yes/No.'\n"
-    "       Only if Yes may you set a definitive answer. If No, the empty fields stay empty strings.\n"
-    "CRITICAL: Do NOT modify or overwrite any key that already had a NON-EMPTY value in the input row. "
-    "Fields that were empty strings (\"\") MUST be filled according to Rule 5 below whenever KB evidence exists. "
-    "Your assessment metadata belongs exclusively in \"_AI_Status\" and \"_AI_Reasoning\".\n\n"
-
-    "5. DYNAMIC FIELD FILLING (CATEGORICAL vs. DESCRIPTIVE):\n"
-    "For every field that was an empty string in the input, apply the appropriate logic based on the column header:\n"
-    "  - CATEGORICAL: If the header lists allowed options (e.g., separated by '/', '|', commas, or parentheses), "
-    "output EXACTLY one listed option.\n"
-    "  - DESCRIPTIVE: If the header asks for free text (e.g., 'פירוט', 'הערות', 'Details'), write a concise, "
-    "professional summary using ONLY KB facts. If no KB info exists, leave as empty string \"\".\n"
-    "NEVER write 'N/A', 'No information available', 'Not found', or any placeholder phrase.\n\n"
-
-    "5a. CONSERVATIVE CATEGORICAL FILLING — STATUS DETERMINES FIELD ACTION:\n"
-    "The \"_AI_Status\" value you assign CONTROLS whether you fill categorical empty fields. These two rules are absolute:\n"
-    "  RULE A — \"OK\" status: You found explicit, unambiguous KB evidence. "
-    "You MUST fill every empty categorical field with exactly one of its listed options. "
-    "An 'OK' row with any empty categorical field is a contradiction and is FORBIDDEN.\n"
-    "  RULE B — \"REVIEW\" or \"NO_DATA\" status: Evidence is partial, ambiguous, or absent. "
-    "You MUST leave every categorical field as an empty string \"\". "
-    "Do NOT guess or pick the most likely option. Human review is required — pre-filling with a guess would corrupt the review process.\n"
-    "DECISION TREE (apply in order for each row):\n"
-    "  1. Is the anchor subject explicitly documented in the KB with sufficient detail? If No → set \"NO_DATA\", leave categorical fields empty.\n"
-    "  2. Is the KB evidence a direct, unambiguous match for what the categorical field asks? If No → set \"REVIEW\", leave categorical fields empty.\n"
-    "  3. Only if both answers are Yes: set \"OK\" and fill each empty categorical field with exactly one listed option.\n\n"
-
-    "6. ZERO INFERENCE:\n"
-    "If explicit evidence for a field is not in the KB, leave that field as an empty string \"\". "
-    "Do not invent, assume, or extrapolate.\n\n"
-
-    "7. OUTPUT FORMAT:\n"
-    "Return ONLY a valid JSON array. "
-    "The array length MUST exactly match the input array length — one object per input row. "
-    "Each object must contain ALL original keys plus the two appended assessment fields. "
-    "Do not add any other new keys. Do not wrap the array in another object."
-)
-
-NAIVE_SYSTEM_PROMPT_EXCEL = (
-    "You are a helpful assistant. Fill in the missing columns in each row based on the provided "
-    "Knowledge Base text. Return the completed rows as a JSON array. Add an '_AI_Status' key to "
-    "each row: 'OK' if you found relevant info, 'REVIEW' if the subject was not in the KB."
-)
-
-SYSTEM_INSTRUCTION_EXTRACT = (
-    "You are a precise data extraction assistant processing compliance forms, questionnaires, and capability matrices. "
-    "Your task is to extract every single item that requires an answer, evaluation, or response. "
-    "CRITICAL: These items often DO NOT end with a question mark. They might be standalone terms, criteria, or table row items. "
-    "Treat every row item, criterion, or topic that expects a status or comment as a 'question_text'. "
-    "Extract them exactly as they appear in the source text (in their original language, including Hebrew). "
-    "Do not filter based on topic. If it is a line item in a form meant to be filled out, extract it as a question. "
-    "Use fields: question_id (string), question_text (string). Generate sequential IDs Q1, Q2, ... if none exist. "
-    "If the text is truly empty or contains no extractable items, return an empty list []."
+from core.prompts import (
+    SYSTEM_INSTRUCTION_EXCEL,
+    NAIVE_SYSTEM_PROMPT_EXCEL,
+    SYSTEM_INSTRUCTION_ANSWER,
+    NAIVE_SYSTEM_PROMPT_ANSWER,
+    SYSTEM_INSTRUCTION_EXTRACT,
 )
 
 
@@ -437,37 +339,20 @@ def _build_static_prefix(headers_str: str, kb_text: str) -> str:
 
 def _build_dynamic_suffix(rows_batch: List[dict]) -> str:
     """
-    The non-cacheable portion of the Excel prompt: row count, step-by-step
-    instructions, and the actual batch JSON. Rebuilt for each batch / sub-batch
-    because the row count and data change at every recursion level.
+    The non-cacheable, per-batch portion of the Excel prompt.
+
+    Contains ONLY information that changes with each call: the row count and
+    the actual batch JSON. All behavioural rules (zero-inference, conservative
+    categorical filling, output format, etc.) are defined once in
+    SYSTEM_INSTRUCTION_EXCEL (core/prompts.py) and must not be repeated here.
+    Duplication between the system prompt and this suffix causes instruction
+    drift whenever one is updated without the other.
     """
-    row_count = len(rows_batch)
+    row_count  = len(rows_batch)
     batch_json = json.dumps(rows_batch, ensure_ascii=False, default=str)
     return (
-        f"You are receiving a JSON array containing exactly {row_count} row object(s). "
-        f"You MUST process EVERY row and return a JSON array of exactly {row_count} object(s) — no more, no less.\n\n"
-        "For each row, follow these steps IN ORDER:\n"
-        "  1. COPY every original key-value pair exactly as provided — do NOT omit or alter any key.\n"
-        "  2. Dynamically identify the anchor (the non-empty subject/control being assessed).\n"
-        "  3. Search the Knowledge Base for that anchor.\n"
-        "  4. Fill empty string fields using KB evidence:\n"
-        "       - Categorical headers (options listed): output exactly one listed option.\n"
-        "       - Descriptive headers: output a concise KB-grounded summary, or \"\" if no info.\n"
-        "       - Already-populated (non-empty) fields: copy them unchanged.\n"
-        "  5. APPEND exactly two new fields to each object:\n"
-        "       \"_AI_Status\"    : \"OK\" | \"REVIEW\" | \"NO_DATA\"\n"
-        "       \"_AI_Reasoning\" : 'Questionnaire asks for X. KB states Y. Direct equivalent? Yes/No.'\n"
-        "     Do NOT modify or overwrite any key that already had a NON-EMPTY value in the input row.\n\n"
-        "CRITICAL RULES:\n"
-        "  - Return ONLY a raw JSON array — no markdown, no wrapper object.\n"
-        "  - Output array length MUST equal input array length.\n"
-        "  - Every output object MUST contain ALL original keys plus the two appended fields.\n"
-        "  - NEVER write 'N/A', 'No information available', or any placeholder. Use \"\" instead.\n"
-        "  - DO NOT TRUNCATE. Return every row in the output array.\n"
-        "  - CONSERVATIVE CATEGORICAL FILLING: '_AI_Status' controls whether you fill categorical fields.\n"
-        "      'OK'               → MUST fill every empty categorical field with one valid listed option.\n"
-        "      'REVIEW'/'NO_DATA' → MUST leave every categorical field as empty string \"\". "
-        "Do NOT guess — human review is required and pre-filling would corrupt the review process.\n\n"
+        f"Process the following batch of exactly {row_count} row(s). "
+        f"Apply all rules from the system prompt and return a JSON array of exactly {row_count} objects.\n\n"
         f"Rows:\n{batch_json}\n"
     )
 

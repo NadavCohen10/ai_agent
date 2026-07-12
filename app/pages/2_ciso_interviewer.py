@@ -12,6 +12,7 @@ from core.llm_provider import OllamaProvider
 from agents.interviewer_agent import CISOInterviewer, BASELINE_TOPICS, TOTAL_BASELINE
 from agents.assessor_agent import _detect_id_key
 from app.exporter import generate_excel
+from app.state import init_session_state, reset_kb_interview_state, reset_q_chat_state
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
@@ -23,24 +24,7 @@ st.set_page_config(
 
 # ── Session state init ────────────────────────────────────────────────────────
 
-_INTERVIEW_DEFAULTS = {
-    "answered_ids":     [],
-    "active_topic_id":  None,
-    "chat_histories":   {},
-    "pending_controls": {},
-    "question_cache":   {},
-}
-for key, default in _INTERVIEW_DEFAULTS.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
-
-# Questionnaire gap chat state
-if "q_gap_queue"       not in st.session_state:
-    st.session_state.q_gap_queue       = []   # list of row indices, built once per df
-if "q_active_row_idx"  not in st.session_state:
-    st.session_state.q_active_row_idx  = None # currently focused gap (row index into draft_df)
-if "q_chat_histories"  not in st.session_state:
-    st.session_state.q_chat_histories  = {}   # dict[int, list[{role, content}]] — per-gap
+init_session_state()
 
 _Q_META_COLS = {"_AI_Status", "_AI_Reasoning", "Evidence/Notes"}
 
@@ -83,14 +67,11 @@ with st.sidebar:
         st.divider()
 
     if st.button("🔄 Reset KB Interview Progress", use_container_width=True):
-        for key in _INTERVIEW_DEFAULTS:
-            st.session_state[key] = _INTERVIEW_DEFAULTS[key]
+        reset_kb_interview_state()
         st.rerun()
 
     if st.button("🔄 Reset Questionnaire Chat", use_container_width=True):
-        st.session_state.q_gap_queue      = []
-        st.session_state.q_active_row_idx = None
-        st.session_state.q_chat_histories = {}
+        reset_q_chat_state()
         st.rerun()
 
 # ── Provider + interviewer ────────────────────────────────────────────────────
@@ -368,18 +349,24 @@ def _q_find_next_pending(draft_df: pd.DataFrame, queue: list[int],
 def _q_init(draft_df: pd.DataFrame) -> None:
     """
     Build the gap queue on first call (or when draft_df changes).
-    Resets all questionnaire chat state if the queue indices are stale.
-    """
-    existing = st.session_state.q_gap_queue
 
-    # Reset if a new questionnaire was loaded (indices no longer match)
-    if existing and not set(existing).issubset(set(draft_df.index)):
-        st.session_state.q_gap_queue      = []
-        st.session_state.q_active_row_idx = None
-        st.session_state.q_chat_histories = {}
+    Identity is tracked via the UUID stored in draft_df_id (set by set_draft_df()
+    in app.state whenever a new questionnaire is processed). Comparing it against
+    q_draft_df_id (the UUID this chat was built for) is the only reliable way to
+    detect a new file — integer row indices alone are insufficient because a new
+    questionnaire almost always has the same 0-based indices as the old one.
+    """
+    current_id = st.session_state.get("draft_df_id")
+    owned_id   = st.session_state.get("q_draft_df_id")
+
+    if current_id != owned_id:
+        # A new (or first) questionnaire was loaded — wipe stale chat state and
+        # stamp the new ownership token so this branch only fires once per file.
+        reset_q_chat_state()
+        st.session_state.q_draft_df_id = current_id
 
     if st.session_state.q_gap_queue:
-        # Queue already built — just make sure active is still valid
+        # Queue already built for this df — just make sure active index is valid.
         if st.session_state.q_active_row_idx is None:
             pending = [r for r in st.session_state.q_gap_queue
                        if str(draft_df.at[r, "_AI_Status"]) != "OK"]
@@ -387,7 +374,7 @@ def _q_init(draft_df: pd.DataFrame) -> None:
                 st.session_state.q_active_row_idx = pending[0]
         return
 
-    # Build queue from current REVIEW/NO_DATA rows
+    # First call for this df — build the queue from REVIEW/NO_DATA rows.
     if "_AI_Status" in draft_df.columns:
         queue = draft_df.index[
             draft_df["_AI_Status"].isin(["REVIEW", "NO_DATA"])

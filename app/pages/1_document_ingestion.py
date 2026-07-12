@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ingestion.kb_builder import KBBuilder, COLUMNS
 from agents.interviewer_agent import find_baseline_gaps, BASELINE_TOPICS, TOTAL_BASELINE
+from app.state import init_session_state
 
 # ── Page config ───────────────────────────────────────────────────────────────
 
@@ -27,10 +28,7 @@ DEFAULT_SCAN_DIR = str(PROJECT_ROOT / "data" / "mock_organization")
 
 # ── Session state ─────────────────────────────────────────────────────────────
 
-if "kb_df" not in st.session_state:
-    st.session_state.kb_df = None
-if "kb_gaps" not in st.session_state:
-    st.session_state.kb_gaps = None
+init_session_state()
 
 # ── Header ────────────────────────────────────────────────────────────────────
 

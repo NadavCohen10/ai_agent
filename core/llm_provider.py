@@ -479,9 +479,12 @@ class AnthropicProvider(BaseLLMProvider):
             )
             raw = response.content[0].text
             print(f"\n[Anthropic Cached Response]\n{raw[:400]}\n")
-            return json.loads(_strip_markdown_fences(raw))
-
         except Exception as e:
             print(f"[Anthropic Cache] Cached call failed ({e}). Falling back to uncached.")
             combined = static_prefix + "\n\n" + dynamic_suffix
             return self.generate_response(system_prompt, combined, json_schema)
+
+        # JSON parse is outside the API error handler so JSONDecodeError propagates
+        # to _process_batch_with_fallback's split-retry logic instead of silently
+        # falling back to uncached with a malformed response.
+        return json.loads(_strip_markdown_fences(raw))

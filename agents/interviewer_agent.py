@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 
 from core.llm_provider import BaseLLMProvider
+from core.prompts import INTERVIEW_QUESTION_SYSTEM, TRANSLATE_SYSTEM
 
 
 # ── 14 Baseline security topics ───────────────────────────────────────────────
@@ -254,59 +255,6 @@ _TRANSLATE_SCHEMA: dict = {
 }
 
 
-# ── System prompts ────────────────────────────────────────────────────────────
-
-_INTERVIEW_QUESTION_SYSTEM = (
-    "You are a senior CISO conducting an internal security baseline interview. "
-    "Rephrase the formal compliance question provided into a single, warm, "
-    "conversational question (1-2 sentences). No jargon. No preamble. "
-    "Return ONLY the JSON object."
-)
-
-_TRANSLATE_SYSTEM = """\
-You are a strict cybersecurity compliance officer building an organization's \
-security baseline profile. Evaluate the interview transcript and decide whether \
-enough specific, verifiable detail has been provided to write a formal control.
-
-══════════════════════════════════════════════════════
-CRITICAL RULE — ZERO INFERENCE (NON-NEGOTIABLE)
-══════════════════════════════════════════════════════
-You are ABSOLUTELY FORBIDDEN from inventing, assuming, or extrapolating ANY \
-specific value the user did not explicitly state. This includes:
-  • Timeframes        — e.g. "annually", "quarterly", "within 30 days"
-  • Frequencies       — e.g. "monthly", "weekly", "every 6 months"
-  • Numerical values  — e.g. "7 days", "AES-256", "3 vendors"
-  • Scope statements  — e.g. "all employees", "all systems" (unless user stated it)
-  • Technology names  — unless the user named the product
-  • Process steps     — unless the user described them
-  • Regulatory labels — e.g. "GDPR", "ISO 27001" (unless user mentioned them)
-
-Violations produce legally unreliable policy documents and MUST NOT occur.
-══════════════════════════════════════════════════════
-
-DECISION LOGIC:
-Step 1 — Read the FULL interview transcript.
-Step 2 — Check which REQUIRED DETAILS (provided below) are still MISSING.
-Step 3 — If ANY required detail is missing:
-           • response_type = "follow_up"
-           • question      = ONE short, specific question for the single most
-                             important missing detail. Do not ask multiple things.
-           • domain            = ""
-           • control_statement = ""
-Step 4 — If ALL required details are present:
-           • response_type     = "formal_control"
-           • question          = ""
-           • domain            = the relevant security domain
-           • control_statement = a single, enforceable policy clause built ONLY
-                                 from facts the user stated.
-                                 ALWAYS write in professional English, even if
-                                 the user answered in Hebrew or another language.
-                                 Format: "<Scope> must/shall <action> <user-stated value>."
-
-Return ONLY the JSON object. No explanation, no markdown.\
-"""
-
-
 # ── Module-level coverage helpers (no LLM required) ──────────────────────────
 # Exported as standalone functions so the Document Ingestion page can run gap
 # analysis without needing an Ollama connection or a CISOInterviewer instance.
@@ -376,7 +324,7 @@ class CISOInterviewer:
         )
         try:
             result = self.provider.generate_response(
-                _INTERVIEW_QUESTION_SYSTEM, user_prompt, _QUESTION_SCHEMA
+                INTERVIEW_QUESTION_SYSTEM, user_prompt, _QUESTION_SCHEMA
             )
             if isinstance(result, dict) and result.get("question"):
                 return result["question"]
@@ -415,7 +363,7 @@ class CISOInterviewer:
 
         try:
             result = self.provider.generate_response(
-                _TRANSLATE_SYSTEM, user_prompt, _TRANSLATE_SCHEMA
+                TRANSLATE_SYSTEM, user_prompt, _TRANSLATE_SCHEMA
             )
             if isinstance(result, dict):
                 rtype = result.get("response_type", "").strip().lower()

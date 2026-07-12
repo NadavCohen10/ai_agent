@@ -22,20 +22,14 @@ from ingestion.document_parser import (
     load_questionnaire_excel_as_dataframe,
 )
 from app.exporter import generate_excel
+from app.state import init_session_state, set_draft_df
 
 
 st.set_page_config(page_title="HITL Security Questionnaire Assistant", layout="wide")
 
 # ── Session state ─────────────────────────────────────────────────────────────
 
-if "draft_df" not in st.session_state:
-    st.session_state.draft_df = None
-if "approved_df" not in st.session_state:
-    st.session_state.approved_df = None
-if "is_excel_pipeline" not in st.session_state:
-    st.session_state.is_excel_pipeline = False
-if "gemini_provider" not in st.session_state:
-    st.session_state.gemini_provider = None
+init_session_state()
 
 
 def _get_gemini_provider() -> GeminiProvider:
@@ -263,7 +257,6 @@ def main():
     # ── Batch processing ──────────────────────────────────────────────────────
     if kb_file and questionnaire_file and analyze_clicked:
         try:
-            st.session_state.approved_df = None   # clear previous approval on new run
             provider = _build_provider(provider_name, api_key_input, ollama_model)
             kb_text  = extract_kb_text(kb_file)
             is_excel = questionnaire_file.name.lower().endswith((".xlsx", ".xls"))
@@ -305,8 +298,7 @@ def main():
 
                 progress.progress(1.0, text="Done.")
                 status_placeholder.empty()
-                st.session_state.is_excel_pipeline = True
-                st.session_state.draft_df          = result_df
+                set_draft_df(result_df, is_excel=True)
                 st.rerun()
 
             # ── PDF pipeline ───────────────────────────────────────────────────
@@ -349,8 +341,7 @@ def main():
                             else "✅ OK",
                             axis=1,
                         )
-                        st.session_state.is_excel_pipeline = False
-                        st.session_state.draft_df          = df
+                        set_draft_df(df, is_excel=False)
                         st.rerun()
                     else:
                         st.info("No AI results to display.")

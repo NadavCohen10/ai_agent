@@ -15,28 +15,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from core.llm_provider import OllamaProvider
-
-
-# ── Extraction prompt ─────────────────────────────────────────────────────────
-
-_SYSTEM_PROMPT = """\
-You are a cybersecurity compliance analyst. Your task is to read a corporate \
-security policy document and extract every specific, measurable security control \
-it contains.
-
-Rules:
-1. Each extracted item must be a single, self-contained control statement.
-2. Focus on controls with concrete, verifiable values: numbers, timeframes, \
-technology names, thresholds, or named frameworks (e.g. "Passwords must be \
-at least 14 characters", "MFA is mandatory for all accounts", \
-"Backups are retained for 30 days").
-3. Do NOT extract vague or aspirational statements (e.g. "security is important").
-4. Assign each control to exactly one domain from this list:
-   Access Control | Authentication | Encryption | Network Security |
-   Incident Response | Backup & Recovery | Vulnerability Management |
-   Endpoint Security | Logging & Monitoring | Compliance & Legal
-5. Return ONLY the JSON object — no markdown, no explanation.
-"""
+from core.prompts import KB_EXTRACTION_SYSTEM
 
 _EXTRACTION_SCHEMA: dict = {
     "type": "object",
@@ -131,7 +110,7 @@ class KBBuilder:
         )
 
         result = self.provider.generate_response(
-            _SYSTEM_PROMPT,
+            KB_EXTRACTION_SYSTEM,
             user_prompt,
             _EXTRACTION_SCHEMA,
         )
